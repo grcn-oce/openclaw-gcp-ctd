@@ -1,0 +1,130 @@
+{
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": true
+    },
+    "controlUi": {
+      "allowInsecureAuth": false,
+      "dangerouslyDisableDeviceAuth": false
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "tokenFile": "/home/openclaw/.openclaw/secrets/telegram-bot-token.txt",
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "streaming": "partial"
+    }
+  },
+
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "${model_primary}",
+        "fallbacks": ${model_fallbacks}
+      },
+      "workspace": "/home/openclaw/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      },
+      "sandbox": {
+        "mode": "all",
+        "workspaceAccess": "ro",
+        "docker": {
+          "image": "${sandbox_image}",
+          "network": "none",
+          "tmpfs": ["/tmp:exec,mode=1777"],
+          "memory": "512m",
+          "cpus": 1.0,
+          "pidsLimit": 256
+        },
+        "browser": {
+          "allowHostControl": false
+        }
+      }
+    }
+  },
+
+  "tools": {
+    "deny": ["browser"],
+    "exec": {
+      "security": "allowlist",
+      "ask": "on-miss",
+      "safeBins": ["jq", "grep", "cut", "sort", "uniq", "head", "tail", "tr", "wc"]
+    },
+    "elevated": {
+      "enabled": false
+    },
+    "web": {
+      "search": {
+        "enabled": true
+      },
+      "fetch": {
+        "enabled": true
+      }
+    }
+  },
+
+  "logging": {
+    "redactSensitive": "tools",
+    "file": "/var/log/openclaw/openclaw.log",
+    "level": "info",
+    "redactPatterns": [
+      "sk-[a-zA-Z0-9]{32,}",
+      "ghp_[a-zA-Z0-9]{36}",
+      "xoxb-[0-9]+-[a-zA-Z0-9]+",
+      "ya29\\.[a-zA-Z0-9_-]+",
+      "AKIA[0-9A-Z]{16}",
+      "ASIA[0-9A-Z]{16}",
+      "[0-9]+:AA[a-zA-Z0-9_-]{33,}"
+    ]
+  },
+
+  "plugins": {
+    "enabled": true,
+    "allow": ["openclaw-plugin-vt-sentinel"]
+  },
+
+  "discovery": {
+    "mdns": {
+      "mode": "off"
+    }
+  },
+
+  "browser": {
+    "enabled": false,
+    "evaluateEnabled": false
+  },
+
+  "hooks": {
+    "enabled": false,
+    "maxBodyBytes": 262144
+  },
+
+  "commands": {
+    "useAccessGroups": true,
+    "bash": false,
+    "debug": false
+  }
+}

@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenClaw on GCP -- Example Variables
+# Copy this to terraform.tfvars and fill in your values.
+#
+# SECURITY: Never commit terraform.tfvars to version control.
+#           Add it to .gitignore.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Required
+project_id         = "my-gcp-project"
+
+# Optional -- Telegram bot token (leave empty to skip Telegram integration)
+telegram_bot_token = ""
+
+# Optional -- leave empty to auto-generate a 48-char hex token
+gateway_auth_token = ""
+
+# Optional -- Brave Search API key
+brave_api_key = ""
+
+# Region & Zone
+region = "us-central1"
+zone   = "us-central1-c"
+
+# Networking
+# SSH is IAP-only by design (no public IP, no direct SSH).
+# Connect with: gcloud compute ssh openclaw-gateway --tunnel-through-iap
+
+# Compute
+instance_name     = "openclaw-gateway"
+machine_type      = "e2-standard-2"
+boot_disk_size_gb = 30
+
+# OpenClaw
+openclaw_version = "latest"
+
+# Model Provider & Configuration
+# Supported providers: google, openai, anthropic
+model_provider   = "google"
+model_primary    = "google-gemini-cli/gemini-3.1-pro-preview"
+model_fallbacks  = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"
+
+# LLM API Key (stored in Secret Manager)
+# Leave empty if using Google Vertex AI with service account auth.
+# For OpenAI: set your OPENAI_API_KEY here
+# For Anthropic: set your ANTHROPIC_API_KEY here
+# For Google Gemini API: set your GEMINI_API_KEY here
+llm_api_key = ""
