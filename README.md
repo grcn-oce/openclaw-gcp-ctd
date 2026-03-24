@@ -77,7 +77,21 @@ This module provisions:
    terraform apply
    ```
 
-4. **Connect to the instance:**
+4. **Wait for startup to complete (~3-5 minutes):**
+
+   The instance runs a startup script that installs Docker, Node.js, and OpenClaw. Wait for it to finish before connecting. You can monitor progress with:
+
+   ```bash
+   gcloud compute ssh openclaw-gateway \
+     --zone=us-central1-c \
+     --tunnel-through-iap \
+     --project=my-gcp-project \
+     --command="sudo tail -f /var/log/openclaw-startup.log"
+   ```
+
+   Wait until you see `=== OpenClaw GCP Startup Complete ===`.
+
+5. **Connect to the instance:**
 
    ```bash
    gcloud compute ssh openclaw-gateway \
@@ -86,12 +100,11 @@ This module provisions:
      --project=my-gcp-project
    ```
 
-5. **Check service status:**
+6. **Check service status:**
 
    ```bash
    sudo systemctl status openclaw-gateway.service
    sudo journalctl -u openclaw-gateway.service -f
-   sudo cat /var/log/openclaw-startup.log
    ```
 
 ## Using the VM
