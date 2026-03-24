@@ -65,8 +65,8 @@ This module provisions:
    boot_disk_size_gb  = 30
    model_provider     = "google"
    model_primary      = "google-gemini-cli/gemini-3.1-pro-preview"
-   model_fallbacks    = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"
-   llm_api_key        = ""  # Leave empty for Google SA auth
+   model_fallbacks    = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"  #Change ask you see fit
+   llm_api_key        = ""  # Leave empty if you want to use Gemini Code Assist OAuth
    ```
 
 3. **Deploy:**
