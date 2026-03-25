@@ -39,6 +39,7 @@ output "gateway_token_secret" {
 
 output "secrets_configured" {
   description = "List of Secret Manager secrets created."
+  sensitive   = true
   value = concat(
     [google_secret_manager_secret.gateway_token.secret_id],
     var.llm_api_key != "" ? [google_secret_manager_secret.llm_api_key[0].secret_id] : [],
@@ -49,6 +50,7 @@ output "secrets_configured" {
 
 output "llm_api_key_status" {
   description = "LLM API key configuration status and next steps."
+  sensitive   = true
   value = var.llm_api_key != "" ? "LLM API key stored in Secret Manager (openclaw-llm-api-key) and auto-injected as ${var.model_provider == "openai" ? "OPENAI_API_KEY" : var.model_provider == "anthropic" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY"}" : <<-EOT
     No LLM API key provided. To add one manually:
     1. gcloud secrets create openclaw-llm-api-key --project=${var.project_id} --replication-policy=automatic --data-file=<(echo -n "YOUR_API_KEY")
