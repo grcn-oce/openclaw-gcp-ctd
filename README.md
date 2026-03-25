@@ -50,7 +50,7 @@ This module provisions:
 1. **Clone and configure:**
 
    ```bash
-   cd terraform-openclaw-gcp
+   cd openclaw-gcp-ctd
    cp terraform.tfvars.example terraform.tfvars
    ```
 
@@ -60,13 +60,13 @@ This module provisions:
    project_id         = "my-gcp-project"
    region             = "us-central1"
    zone               = "us-central1-c"
-   network_name       = "openclaw-vpc"
+   instance_name      = "openclaw-gateway"
    machine_type       = "e2-standard-2"
    boot_disk_size_gb  = 30
    model_provider     = "google"
    model_primary      = "google-gemini-cli/gemini-3.1-pro-preview"
-   model_fallbacks    = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"  #Change ask you see fit
-   llm_api_key        = ""  # Leave empty if you want to use Gemini Code Assist OAuth
+   model_fallbacks    = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"  # Change as you see fit
+   llm_api_key        = ""  # Leave empty if using Google Vertex AI with service account auth
    ```
 
 3. **Deploy:**
@@ -583,20 +583,26 @@ sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `project_id` | Yes | -- | GCP project ID |
-| `telegram_bot_token` | No | `""` | Telegram bot token (stored in Secret Manager) |
-| `gateway_auth_token` | No | auto-generated | Gateway auth token (48-char hex if empty) |
-| `brave_api_key` | No | `""` | Brave Search API key |
 | `region` | No | `us-central1` | GCP region |
 | `zone` | No | `us-central1-c` | GCE instance zone |
 | `network_name` | No | `openclaw-vpc` | Name of the VPC network |
+| `subnet_cidr` | No | `10.10.0.0/24` | CIDR range for the subnet |
+| `instance_name` | No | `openclaw-gateway` | Name of the GCE instance |
 | `machine_type` | No | `e2-standard-2` | GCE machine type |
 | `boot_disk_size_gb` | No | `30` | Boot disk size in GB |
+| `boot_disk_type` | No | `pd-balanced` | Boot disk type (`pd-standard`, `pd-balanced`, `pd-ssd`) |
+| `os_image` | No | `debian-cloud/debian-12` | Boot disk image |
+| `telegram_bot_token` | No | `""` | Telegram bot token (stored in Secret Manager) |
+| `gateway_auth_token` | No | auto-generated | Gateway auth token (48-char hex if empty) |
+| `brave_api_key` | No | `""` | Brave Search API key |
+| `openclaw_version` | No | `latest` | OpenClaw npm package version |
+| `sandbox_image` | No | `""` | Docker image for sandbox containers |
 | `model_provider` | No | `google` | LLM provider: `google`, `openai`, or `anthropic` |
 | `model_primary` | No | `google-gemini-cli/gemini-3.1-pro-preview` | Primary model for OpenClaw agents |
 | `model_fallbacks` | No | `["google/gemini-3.1-pro-preview", ...]` | Fallback model identifiers (JSON array) |
 | `llm_api_key` | No | `""` | LLM provider API key (stored in Secret Manager) |
-| `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `deployer_service_account` | No | `""` | SA email granted IAP + OS Login access |
+| `labels` | No | `{app="openclaw", ...}` | Labels to apply to all resources |
 
 ## Outputs
 
@@ -610,6 +616,7 @@ sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
 | `ssh_via_iap` | SSH command to connect |
 | `gateway_token_secret` | Secret Manager resource for gateway token |
 | `secrets_configured` | List of secrets created |
+| `llm_api_key_status` | LLM API key configuration status and next steps |
 
 ## Security
 
