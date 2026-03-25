@@ -119,26 +119,26 @@ variable "sandbox_image" {
 }
 
 variable "model_provider" {
-  description = "LLM provider: google-vertex (ADC via service account), google (Gemini API key), openai, or anthropic."
+  description = "LLM provider: litellm (Vertex AI via local LiteLLM proxy), google (Gemini API key), openai, or anthropic."
   type        = string
-  default     = "google-vertex"
+  default     = "litellm"
 
   validation {
-    condition     = contains(["google-vertex", "google", "openai", "anthropic"], var.model_provider)
-    error_message = "model_provider must be one of: google-vertex, google, openai, anthropic."
+    condition     = contains(["litellm", "google-vertex", "google", "openai", "anthropic"], var.model_provider)
+    error_message = "model_provider must be one of: litellm, google-vertex, google, openai, anthropic."
   }
 }
 
 variable "model_primary" {
-  description = "Primary model identifier for OpenClaw agents. Use 'google-vertex/' prefix for Vertex AI."
+  description = "Primary model identifier for OpenClaw agents. Use 'litellm/' prefix for LiteLLM proxy models."
   type        = string
-  default     = "google-vertex/gemini-3.1-pro-preview"
+  default     = "litellm/gemini-3.1-pro-preview"
 }
 
 variable "model_fallbacks" {
-  description = "Fallback model identifiers (JSON array). Use 'google-vertex/' prefix for Vertex AI."
+  description = "Fallback model identifiers (JSON array). Use 'litellm/' prefix for LiteLLM proxy models."
   type        = string
-  default     = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
+  default     = "[\"litellm/gemini-3.1-pro-preview\", \"litellm/gemini-3.1-flash-lite-preview\"]"
 }
 
 variable "llm_api_key" {

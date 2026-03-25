@@ -12,6 +12,7 @@ This deployment applies security controls that go beyond a standard OpenClaw ins
 | **SSH access** | Direct SSH from internet | SSH via IAP tunnel only (Google-authenticated) |
 | **Firewall** | OS default (allow all) | GCP VPC deny-all ingress + allowlist rules |
 | **Secrets storage** | Plaintext in config files or env | GCP Secret Manager with per-secret IAM |
+| **LLM authentication** | API keys in config | VM service account ADC via LiteLLM proxy (no API keys needed) |
 | **Service account** | Default Compute SA (broad permissions) | Dedicated SA with least-privilege roles |
 | **VM integrity** | Standard boot | Shielded VM: Secure Boot, vTPM, Integrity Monitoring |
 | **OS hardening** | Default SSH config | Root login disabled, password auth off, OS Login enforced, project SSH keys blocked |
@@ -24,22 +25,51 @@ This deployment applies security controls that go beyond a standard OpenClaw ins
 
 ## Architecture
 
+```
+┌─────────────────────────────────────────────────────────┐
+│  GCE Instance (Shielded VM, no public IP)               │
+│                                                         │
+│  ┌───────────────────┐    ┌──────────────────────────┐  │
+│  │  OpenClaw Gateway  │───▶│  LiteLLM Proxy (:4000)   │  │
+│  │  (Node.js :18789)  │    │  OpenAI-compatible API   │  │
+│  └───────────────────┘    └──────────┬───────────────┘  │
+│                                      │ ADC (SA token)   │
+│  ┌───────────────────┐               ▼                  │
+│  │  Docker Sandbox    │    ┌──────────────────────────┐  │
+│  │  (network: none)   │    │  Vertex AI API (global)  │  │
+│  └───────────────────┘    │  Gemini 3.1 models       │  │
+│                            └──────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
 This module provisions:
 
 - **VPC + Subnet** with no default network, private IP Google access
 - **Cloud Firewall** deny-all ingress + SSH via IAP only (no public IP)
 - **Cloud NAT** for outbound internet without a public IP
-- **Service Account** with least-privilege IAM bindings
+- **Service Account** with least-privilege IAM bindings (`aiplatform.user` for Vertex AI)
 - **Secret Manager** secrets for gateway token and optional channel credentials
 - **Artifact Registry** private Docker repository for sandbox images
 - **GCE Instance** with Shielded VM (Secure Boot, vTPM, Integrity Monitoring)
-- **Systemd service** with hardened unit configuration
+- **LiteLLM Proxy** local OpenAI-compatible gateway that authenticates to Vertex AI via the VM's service account (ADC)
+- **Systemd services** for both LiteLLM proxy and OpenClaw gateway
+
+### How LLM Authentication Works
+
+Unlike typical setups that require API keys, this deployment uses the GCE VM's service account for LLM authentication:
+
+1. The VM runs with a dedicated service account that has `roles/aiplatform.user`
+2. **LiteLLM proxy** runs on `localhost:4000` and authenticates to Vertex AI using Application Default Credentials (ADC) from the VM's metadata server
+3. **OpenClaw** connects to LiteLLM as an `openai-completions` provider — no API keys leave the VM
+4. LiteLLM translates OpenAI-format requests into Vertex AI API calls with OAuth2 tokens
+
+This means **no LLM API keys are needed** in your Terraform config, Secret Manager, or environment variables.
 
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
 - [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (`gcloud`)
-- A GCP project with billing enabled
+- A GCP project with billing enabled and the Vertex AI API enabled
 - Authenticated credentials:
   ```bash
   gcloud auth application-default login
@@ -63,11 +93,14 @@ This module provisions:
    instance_name      = "openclaw-gateway"
    machine_type       = "e2-standard-2"
    boot_disk_size_gb  = 30
-   model_provider     = "google-vertex"
-   model_primary      = "google-vertex/gemini-3.1-pro-preview"
-   model_fallbacks    = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
-   llm_api_key        = "AIza..."  # Required — API key from Google Cloud console (APIs & Services > Credentials)
+
+   # Default: LiteLLM proxy → Vertex AI (Gemini 3.1) via service account ADC
+   model_provider     = "litellm"
+   model_primary      = "litellm/gemini-3.1-pro-preview"
+   model_fallbacks    = "[\"litellm/gemini-3.1-pro-preview\", \"litellm/gemini-3.1-flash-lite-preview\"]"
    ```
+
+   > **No `llm_api_key` needed** — the VM's service account authenticates to Vertex AI automatically.
 
 3. **Deploy:**
 
@@ -77,9 +110,9 @@ This module provisions:
    terraform apply
    ```
 
-4. **Wait for startup to complete (~3-5 minutes):**
+4. **Wait for startup to complete (~5-7 minutes):**
 
-   The instance runs a startup script that installs Docker, Node.js, and OpenClaw. Wait for it to finish before connecting. You can monitor progress with:
+   The startup script installs Docker, Node.js, OpenClaw, Python, and LiteLLM. Monitor progress with:
 
    ```bash
    gcloud compute ssh openclaw-gateway \
@@ -103,8 +136,8 @@ This module provisions:
 6. **Check service status:**
 
    ```bash
+   sudo systemctl status litellm.service
    sudo systemctl status openclaw-gateway.service
-   sudo journalctl -u openclaw-gateway.service -f
    ```
 
 ## Using the VM
@@ -116,9 +149,11 @@ When you SSH into the instance, you land as your admin user (e.g., `admin_yourna
 The admin user can manage the system but does **not** have OpenClaw secrets in the environment. Use this for:
 
 - Checking service status: `sudo systemctl status openclaw-gateway.service`
+- Checking LiteLLM status: `sudo systemctl status litellm.service`
 - Viewing logs: `sudo journalctl -u openclaw-gateway.service -f`
+- Viewing LiteLLM logs: `sudo journalctl -u litellm.service -f`
 - Viewing startup logs: `sudo cat /var/log/openclaw-startup.log`
-- Restarting the service: `sudo systemctl restart openclaw-gateway.service`
+- Restarting services: `sudo systemctl restart litellm.service openclaw-gateway.service`
 - Editing config files: `sudo -u openclaw nano /home/openclaw/.openclaw/openclaw.json`
 - Running one-off openclaw commands with the token:
   ```bash
@@ -128,7 +163,7 @@ The admin user can manage the system but does **not** have OpenClaw secrets in t
 
 ### As openclaw user (recommended for OpenClaw CLI)
 
-Switch to the `openclaw` user to get all secrets (gateway token, LLM API keys, etc.) automatically loaded in your shell:
+Switch to the `openclaw` user to get all secrets automatically loaded in your shell:
 
 ```bash
 sudo -iu openclaw
@@ -140,7 +175,6 @@ Then you can use OpenClaw directly:
 openclaw status          # Check gateway status
 openclaw tui             # Launch the interactive TUI
 openclaw logs --follow   # Stream live logs
-openclaw security audit  # Run a security audit
 openclaw doctor --fix    # Auto-fix config issues
 ```
 
@@ -156,37 +190,59 @@ exit
 |------|---------|
 | SSH into the VM | `gcloud compute ssh openclaw-gateway --zone=us-central1-c --tunnel-through-iap --project=my-gcp-project` |
 | Switch to openclaw user | `sudo -iu openclaw` |
-| Check service status | `sudo systemctl status openclaw-gateway.service` |
-| Restart the service | `sudo systemctl restart openclaw-gateway.service` |
-| View live logs | `sudo journalctl -u openclaw-gateway.service -f` |
+| Check OpenClaw service | `sudo systemctl status openclaw-gateway.service` |
+| Check LiteLLM proxy | `sudo systemctl status litellm.service` |
+| Restart both services | `sudo systemctl restart litellm.service openclaw-gateway.service` |
+| View OpenClaw logs | `sudo journalctl -u openclaw-gateway.service -f` |
+| View LiteLLM logs | `sudo journalctl -u litellm.service -f` |
 | View startup log | `sudo cat /var/log/openclaw-startup.log` |
 | Launch TUI (as openclaw) | `openclaw tui` |
-| Check gateway status | `openclaw status` |
+| Test LiteLLM health | `curl http://127.0.0.1:4000/health` |
 
 ## LLM Provider Configuration
 
-OpenClaw supports multiple LLM providers. You have two options for configuring the API key:
+### Default: LiteLLM + Vertex AI (recommended)
 
-- **Option A: Via Terraform (recommended)** — provide the API key as a variable and Terraform automatically creates the Secret Manager entry, IAM binding, and wires it into the service
-- **Option B: Manual setup after deployment** — deploy first, then add the API key to Secret Manager yourself
-
-### Option A: Provide API key via Terraform
-
-Set `model_provider`, `model_primary`, `model_fallbacks`, and `llm_api_key` in your `terraform.tfvars`. Terraform will:
-- Store the key in Secret Manager (`openclaw-llm-api-key`)
-- Grant the gateway service account read access
-- Automatically fetch and export it as the correct env var at startup
-
-#### Google Vertex AI (Gemini 3.1 Pro) — Default
+The default configuration uses a **LiteLLM proxy** running on the VM to route requests to **Vertex AI**. Authentication uses the VM's service account via ADC — no API keys required.
 
 ```hcl
-model_provider  = "google-vertex"
-model_primary   = "google-vertex/gemini-3.1-pro-preview"
-model_fallbacks = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
-llm_api_key     = "AIza..."  # Required — API key from Google Cloud console (APIs & Services > Credentials)
+model_provider  = "litellm"
+model_primary   = "litellm/gemini-3.1-pro-preview"
+model_fallbacks = "[\"litellm/gemini-3.1-pro-preview\", \"litellm/gemini-3.1-flash-lite-preview\"]"
 ```
 
-> **Note:** A Gemini API key is required even when using the `google-vertex` provider. Create one in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) under **APIs & Services > Credentials**, with the Vertex AI API enabled. The key is stored securely in GCP Secret Manager and written to the agent's `auth-profiles.json` at startup.
+**How it works:**
+
+1. OpenClaw sends requests to `http://127.0.0.1:4000/v1` (LiteLLM) using the `openai-completions` API format
+2. LiteLLM maps model names (e.g., `gemini-3.1-pro-preview`) to Vertex AI endpoints (`vertex_ai/gemini-3.1-pro-preview`)
+3. LiteLLM authenticates to Vertex AI using the VM's service account token (ADC via metadata server)
+4. No API keys are stored, rotated, or managed
+
+**LiteLLM config** is at `/etc/litellm/config.yaml`. To add more models:
+
+```bash
+sudo nano /etc/litellm/config.yaml
+```
+
+```yaml
+model_list:
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: "my-gcp-project"
+      vertex_location: "global"
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_project: "my-gcp-project"
+      vertex_location: "global"
+```
+
+Then restart: `sudo systemctl restart litellm.service openclaw-gateway.service`
+
+### Alternative: Direct API key providers
+
+You can still use direct API key providers (OpenAI, Anthropic, Google AI Studio) by setting `model_provider` and `llm_api_key`:
 
 #### OpenAI
 
@@ -194,7 +250,7 @@ llm_api_key     = "AIza..."  # Required — API key from Google Cloud console (A
 model_provider  = "openai"
 model_primary   = "openai/gpt-4o"
 model_fallbacks = "[\"openai/gpt-4o-mini\"]"
-llm_api_key     = "sk-..."  # Your OpenAI API key → exported as OPENAI_API_KEY
+llm_api_key     = "sk-..."  # Stored in Secret Manager, exported as OPENAI_API_KEY
 ```
 
 #### Anthropic
@@ -203,92 +259,19 @@ llm_api_key     = "sk-..."  # Your OpenAI API key → exported as OPENAI_API_KEY
 model_provider  = "anthropic"
 model_primary   = "anthropic/claude-sonnet-4-6"
 model_fallbacks = "[\"anthropic/claude-haiku-4-5\"]"
-llm_api_key     = "sk-ant-..."  # Your Anthropic API key → exported as ANTHROPIC_API_KEY
+llm_api_key     = "sk-ant-..."  # Stored in Secret Manager, exported as ANTHROPIC_API_KEY
 ```
 
-### Option B: Add API key manually after deployment
+#### Google AI Studio (Gemini API key)
 
-If you prefer not to pass secrets through Terraform (e.g., for security policy reasons), deploy without `llm_api_key` and add it manually:
-
-#### 1. Create the secret in GCP Secret Manager
-
-```bash
-echo -n "YOUR_API_KEY" | \
-  gcloud secrets create openclaw-llm-api-key \
-    --project=my-gcp-project \
-    --replication-policy=automatic \
-    --data-file=-
+```hcl
+model_provider  = "google"
+model_primary   = "google/gemini-3.1-pro-preview"
+model_fallbacks = "[\"google/gemini-3.1-flash-lite-preview\"]"
+llm_api_key     = "AIza..."  # Stored in Secret Manager, exported as GEMINI_API_KEY
 ```
 
-#### 2. Grant the gateway service account access
-
-```bash
-gcloud secrets add-iam-policy-binding openclaw-llm-api-key \
-  --project=my-gcp-project \
-  --role=roles/secretmanager.secretAccessor \
-  --member="serviceAccount:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com"
-```
-
-#### 3. SSH into the VM and update fetch-secrets.sh
-
-```bash
-gcloud compute ssh openclaw-gateway \
-  --zone=us-central1-c \
-  --tunnel-through-iap \
-  --project=my-gcp-project
-```
-
-Edit the fetch script:
-
-```bash
-sudo -u openclaw nano /home/openclaw/.openclaw/secrets/fetch-secrets.sh
-```
-
-Add the fetch and export lines. Use the correct env var for your provider:
-
-| Provider | Env Var |
-|----------|---------|
-| Google Gemini | `GEMINI_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Anthropic | `ANTHROPIC_API_KEY` |
-
-```bash
-# Add after the gateway token fetch:
-fetch_secret "openclaw-llm-api-key" "$SECRETS_DIR/llm-api-key.txt"
-
-# Add inside the { ... } > "$ENV_FILE" block:
-echo "GEMINI_API_KEY=$(cat "$SECRETS_DIR/llm-api-key.txt")"
-```
-
-#### 4. Restart the service
-
-```bash
-sudo systemctl restart openclaw-gateway.service
-sudo systemctl status openclaw-gateway.service
-```
-
-### Using an existing Secret Manager entry
-
-If you already have an API key in Secret Manager (e.g., `projects/my-project/secrets/my-existing-key`), you can skip creating a new one. Just grant access and update `fetch-secrets.sh` to reference your existing secret name:
-
-```bash
-# Grant access
-gcloud secrets add-iam-policy-binding my-existing-key \
-  --project=my-gcp-project \
-  --role=roles/secretmanager.secretAccessor \
-  --member="serviceAccount:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com"
-
-# Then in fetch-secrets.sh, use your secret name:
-fetch_secret "my-existing-key" "$SECRETS_DIR/llm-api-key.txt"
-```
-
-### How it works
-
-The API key is stored securely in GCP Secret Manager and never written to disk in plaintext config files. At service startup:
-1. `fetch-secrets.sh` pulls the latest secret version from Secret Manager
-2. The key is written to a permission-restricted file (`chmod 600`)
-3. It's exported as the appropriate environment variable in the service's env file
-4. The OpenClaw gateway process reads the env var at runtime
+When `llm_api_key` is set, Terraform stores it in Secret Manager with proper IAM bindings and injects it as an environment variable at startup.
 
 ## Channel Integration
 
@@ -383,43 +366,6 @@ Restart the service:
 sudo systemctl restart openclaw-gateway.service
 ```
 
-### Adding Other Channels
-
-The same pattern applies for any channel:
-
-1. **Create the secret** in Secret Manager:
-
-   ```bash
-   echo -n "YOUR_SECRET_VALUE" | \
-     gcloud secrets create openclaw-<channel>-token \
-       --project=my-gcp-project \
-       --replication-policy=automatic \
-       --data-file=-
-   ```
-
-2. **Grant access** to the gateway service account:
-
-   ```bash
-   gcloud secrets add-iam-policy-binding openclaw-<channel>-token \
-     --project=my-gcp-project \
-     --role=roles/secretmanager.secretAccessor \
-     --member="serviceAccount:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com"
-   ```
-
-3. **Add the fetch** to `fetch-secrets.sh`:
-
-   ```bash
-   fetch_secret "openclaw-<channel>-token" "$SECRETS_DIR/<channel>-token.txt"
-   ```
-
-4. **Configure the channel** in `openclaw.json` under `"channels"`
-
-5. **Restart** the service:
-
-   ```bash
-   sudo systemctl restart openclaw-gateway.service
-   ```
-
 ### Rotating Secrets
 
 To rotate a secret without downtime:
@@ -437,148 +383,7 @@ gcloud compute ssh openclaw-gateway \
   --tunnel-through-iap \
   --project=my-gcp-project \
   --command="sudo systemctl restart openclaw-gateway.service"
-
-# Disable the old version (optional)
-gcloud secrets versions disable OLD_VERSION_NUMBER \
-  --secret=openclaw-telegram-bot-token \
-  --project=my-gcp-project
 ```
-
-## Adding Custom Secrets
-
-You can add any additional secret (API keys, tokens, credentials) to the OpenClaw VM using GCP Secret Manager. Secrets are fetched at service startup and exposed as environment variables.
-
-### Step-by-step guide
-
-#### 1. Create the secret in GCP Secret Manager
-
-From your local machine or Cloud Shell:
-
-```bash
-echo -n "YOUR_SECRET_VALUE" | \
-  gcloud secrets create my-custom-secret \
-    --project=my-gcp-project \
-    --replication-policy=automatic \
-    --data-file=-
-```
-
-#### 2. Grant the gateway service account access
-
-```bash
-gcloud secrets add-iam-policy-binding my-custom-secret \
-  --project=my-gcp-project \
-  --role=roles/secretmanager.secretAccessor \
-  --member="serviceAccount:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com"
-```
-
-#### 3. SSH into the OpenClaw VM
-
-```bash
-gcloud compute ssh openclaw-gateway \
-  --zone=us-central1-c \
-  --tunnel-through-iap \
-  --project=my-gcp-project
-```
-
-#### 4. Add the secret fetch to `fetch-secrets.sh`
-
-Edit the fetch script:
-
-```bash
-sudo -u openclaw nano /home/openclaw/.openclaw/secrets/fetch-secrets.sh
-```
-
-Add a `fetch_secret` line and an `echo` line to export it as an env var. For example, to add a secret called `my-custom-secret` as the env var `MY_CUSTOM_SECRET`:
-
-```bash
-# Add this line after the existing fetch_secret calls:
-fetch_secret "my-custom-secret" "$SECRETS_DIR/my-custom-secret.txt"
-
-# Add this line inside the { ... } > "$ENV_FILE" block:
-echo "MY_CUSTOM_SECRET=$(cat "$SECRETS_DIR/my-custom-secret.txt")"
-```
-
-The complete `fetch-secrets.sh` should look like:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-SECRETS_DIR="/home/openclaw/.openclaw/secrets"
-PROJECT="my-gcp-project"
-
-mkdir -p "$SECRETS_DIR"
-chmod 700 "$SECRETS_DIR"
-
-fetch_secret() {
-  local secret_name="$1"
-  local dest_file="$2"
-  gcloud secrets versions access latest \
-    --secret="$secret_name" \
-    --project="$PROJECT" \
-    > "$dest_file" 2>/dev/null
-  chmod 600 "$dest_file"
-  echo "[fetch-secrets] Wrote $dest_file"
-}
-
-fetch_secret "openclaw-gateway-token" "$SECRETS_DIR/gateway-token.txt"
-fetch_secret "my-custom-secret"       "$SECRETS_DIR/my-custom-secret.txt"
-
-ENV_FILE="$SECRETS_DIR/openclaw-env"
-{
-  echo "OPENCLAW_GATEWAY_TOKEN=$(cat "$SECRETS_DIR/gateway-token.txt")"
-  echo "MY_CUSTOM_SECRET=$(cat "$SECRETS_DIR/my-custom-secret.txt")"
-} > "$ENV_FILE"
-chmod 600 "$ENV_FILE"
-echo "[fetch-secrets] Wrote $ENV_FILE"
-echo "[fetch-secrets] All secrets fetched successfully."
-```
-
-#### 5. (Optional) Make the secret available in interactive sessions
-
-To use the secret when SSH'd into the VM, add it to the openclaw user's `.bashrc`:
-
-```bash
-sudo -u openclaw bash -c 'cat >> ~/.bashrc <<'\''EOF'\''
-
-# Load custom secret
-if [ -f "$HOME/.openclaw/secrets/my-custom-secret.txt" ]; then
-  export MY_CUSTOM_SECRET=$(cat "$HOME/.openclaw/secrets/my-custom-secret.txt")
-fi
-EOF'
-```
-
-#### 6. Restart the service
-
-```bash
-sudo systemctl restart openclaw-gateway.service
-```
-
-#### 7. Verify
-
-Check that the service started successfully and the secret is loaded:
-
-```bash
-sudo systemctl status openclaw-gateway.service
-```
-
-To verify the env var is set in the service:
-
-```bash
-sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
-```
-
-### Common examples
-
-| Secret | GCP Secret Name | Env Var |
-|--------|----------------|---------|
-| OpenAI API key | `openclaw-openai-api-key` | `OPENAI_API_KEY` |
-| Anthropic API key | `openclaw-anthropic-api-key` | `ANTHROPIC_API_KEY` |
-| Gemini API key | `openclaw-gemini-api-key` | `GEMINI_API_KEY` |
-| Brave Search key | `openclaw-brave-api-key` | `BRAVE_API_KEY` |
-| Telegram bot token | `openclaw-telegram-bot-token` | `TELEGRAM_BOT_TOKEN` |
-| GitHub PAT | `openclaw-github-pat` | `GITHUB_TOKEN` |
-| Custom webhook URL | `openclaw-webhook-url` | `WEBHOOK_URL` |
 
 ## Variables
 
@@ -599,10 +404,10 @@ sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
 | `brave_api_key` | No | `""` | Brave Search API key |
 | `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `sandbox_image` | No | `""` | Docker image for sandbox containers |
-| `model_provider` | No | `google` | LLM provider: `google`, `openai`, or `anthropic` |
-| `model_primary` | No | `google-vertex/gemini-3.1-pro` | Primary model for OpenClaw agents (Vertex AI endpoint) |
-| `model_fallbacks` | No | `["google-vertex/gemini-3.1-pro", ...]` | Fallback model identifiers (JSON array) |
-| `llm_api_key` | No | `""` | LLM provider API key (stored in Secret Manager) |
+| `model_provider` | No | `litellm` | LLM provider: `litellm` (Vertex AI via proxy), `google`, `openai`, or `anthropic` |
+| `model_primary` | No | `litellm/gemini-3.1-pro-preview` | Primary model for OpenClaw agents |
+| `model_fallbacks` | No | `["litellm/gemini-3.1-pro-preview", ...]` | Fallback model identifiers (JSON array) |
+| `llm_api_key` | No | `""` | LLM provider API key (not needed for `litellm` provider) |
 | `deployer_service_account` | No | `""` | SA email granted IAP + OS Login access |
 | `labels` | No | `{app="openclaw", ...}` | Labels to apply to all resources |
 
@@ -626,10 +431,53 @@ sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
 - **SSH via IAP only** -- firewall allows SSH from Google's IAP range (`35.235.240.0/20`)
 - **OS Login enforced** -- no project-wide SSH keys
 - **Shielded VM** -- Secure Boot, vTPM, Integrity Monitoring
-- **Secrets in Secret Manager** -- never stored in plaintext in Terraform state or on disk
-- **Dedicated service account** -- least-privilege IAM (logging, monitoring, Artifact Registry read, Secret Manager access)
+- **No LLM API keys** -- Vertex AI auth via service account ADC through LiteLLM proxy
+- **Secrets in Secret Manager** -- gateway token and optional keys never stored in plaintext
+- **LiteLLM bound to localhost** -- proxy only listens on `127.0.0.1:4000`, not exposed externally
+- **Dedicated service account** -- least-privilege IAM (Vertex AI user, logging, monitoring, Artifact Registry read, Secret Manager access)
 - **Systemd hardening** -- `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`
 - **Docker hardening** -- `no-new-privileges`, log rotation, ulimits, sandbox network `none`
+
+## Troubleshooting
+
+### LiteLLM proxy not starting
+
+```bash
+sudo journalctl -u litellm.service --no-pager -n 50
+sudo cat /etc/litellm/config.yaml
+```
+
+### Model not found (404)
+
+Verify the model name is valid on Vertex AI. Preview models require the `-preview` suffix and use the `global` location:
+
+```bash
+# Check current LiteLLM config
+sudo cat /etc/litellm/config.yaml
+
+# Verify vertex_location is "global" for Gemini 3.x preview models
+```
+
+### OpenClaw can't connect to LiteLLM
+
+```bash
+# Check LiteLLM is running
+curl http://127.0.0.1:4000/health
+
+# Check OpenClaw config points to LiteLLM
+sudo -u openclaw cat /home/openclaw/.openclaw/openclaw.json | grep -A3 baseUrl
+```
+
+### Service account permissions
+
+The VM's service account needs `roles/aiplatform.user`. Verify:
+
+```bash
+gcloud projects get-iam-policy my-gcp-project \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"
+```
 
 ## Cleanup
 

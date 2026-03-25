@@ -35,11 +35,12 @@ boot_disk_size_gb = 30
 openclaw_version = "latest"
 
 # Model Provider & Configuration
-# Supported providers: google, openai, anthropic
-model_provider   = "google-vertex"
-model_primary    = "google-vertex/gemini-3.1-pro-preview"
-model_fallbacks  = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
+# Default: litellm (Vertex AI via local LiteLLM proxy, uses VM service account ADC -- no API key needed)
+# Alternatives: google (Gemini API key), openai, anthropic
+model_provider   = "litellm"
+model_primary    = "litellm/gemini-3.1-pro-preview"
+model_fallbacks  = "[\"litellm/gemini-3.1-pro-preview\", \"litellm/gemini-3.1-flash-lite-preview\"]"
 
 # LLM API Key (stored in Secret Manager)
-# Required for google-vertex: set your API key (from Google Cloud Console > APIs & Services > Credentials)
-llm_api_key = ""
+# Not needed for litellm provider. Only set for openai, anthropic, or google providers.
+# llm_api_key = ""

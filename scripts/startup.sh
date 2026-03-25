@@ -126,6 +126,74 @@ echo ">>> Pulling sandbox Docker image ($SANDBOX_IMAGE)..."
 docker pull "$SANDBOX_IMAGE"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 4b. Install LiteLLM Proxy (Vertex AI → OpenAI-compatible gateway)
+# ──────────────────────────────────────────────────────────────────────────────
+
+echo ">>> Installing Python3 and LiteLLM proxy..."
+apt-get install -y -qq python3 python3-pip python3-venv > /dev/null 2>&1
+
+LITELLM_VENV="/opt/litellm"
+python3 -m venv "$LITELLM_VENV"
+"$LITELLM_VENV/bin/pip" install --quiet litellm[proxy] google-cloud-aiplatform
+
+echo ">>> Creating LiteLLM config..."
+mkdir -p /etc/litellm
+cat > /etc/litellm/config.yaml <<LITELLMEOF
+model_list:
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: "$PROJECT_ID"
+      vertex_location: "global"
+  - model_name: gemini-3.1-flash-lite-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-lite-preview
+      vertex_project: "$PROJECT_ID"
+      vertex_location: "global"
+
+general_settings:
+  master_key: "sk-litellm-local-only"
+LITELLMEOF
+
+echo ">>> Creating LiteLLM systemd service..."
+cat > /etc/systemd/system/litellm.service <<LITESVCEOF
+[Unit]
+Description=LiteLLM Proxy (Vertex AI Gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$LITELLM_VENV/bin/litellm --config /etc/litellm/config.yaml --host 127.0.0.1 --port 4000
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target
+LITESVCEOF
+
+systemctl daemon-reload
+systemctl enable litellm.service
+systemctl start litellm.service
+
+echo ">>> Waiting for LiteLLM proxy to be ready..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -s http://127.0.0.1:4000/health > /dev/null 2>&1; then
+    echo ">>> LiteLLM proxy is ready."
+    break
+  fi
+  echo ">>> LiteLLM not ready yet (attempt $i), waiting 5s..."
+  sleep 5
+done
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 5. Configure Secrets (GCP Secret Manager)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -162,13 +230,12 @@ ENV_FILE="\$SECRETS_DIR/openclaw-env"
   echo "OPENCLAW_GATEWAY_TOKEN=\$(cat "\$SECRETS_DIR/gateway-token.txt")"
 FETCHEOF
 
-if [ "$MODEL_PROVIDER" = "google-vertex" ]; then
-  # Vertex AI uses ADC (service account on the VM) -- no API key needed.
-  # Set project and location so the Vertex AI SDK knows where to send requests.
-cat >> "$SECRETS_DIR/fetch-secrets.sh" <<FETCHEOF_VERTEX
-  echo "GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
-  echo "GOOGLE_CLOUD_LOCATION=global"
-FETCHEOF_VERTEX
+if [ "$MODEL_PROVIDER" = "litellm" ]; then
+  # LiteLLM proxy handles Vertex AI auth via ADC -- no LLM API key needed.
+  # Pass the LiteLLM master key so OpenClaw can authenticate to the local proxy.
+cat >> "$SECRETS_DIR/fetch-secrets.sh" <<'FETCHEOF_LITELLM'
+  echo "OPENAI_API_KEY=sk-litellm-local-only"
+FETCHEOF_LITELLM
 elif [ "$HAS_LLM_API_KEY" = "true" ]; then
   # Map provider to the correct env var name
   case "$MODEL_PROVIDER" in
@@ -222,6 +289,18 @@ cat > "$OPENCLAW_HOME/.openclaw/openclaw.json" <<CONFIGEOF
     "controlUi": {
       "allowInsecureAuth": false,
       "dangerouslyDisableDeviceAuth": false
+    }
+  },
+  "models": {
+    "providers": {
+      "litellm": {
+        "api": "openai-completions",
+        "baseUrl": "http://127.0.0.1:4000/v1",
+        "models": [
+          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview" },
+          { "id": "gemini-3.1-flash-lite-preview", "name": "Gemini 3.1 Flash Lite Preview" }
+        ]
+      }
     }
   },
   "channels": {},
@@ -315,17 +394,16 @@ mkdir -p "$OPENCLAW_HOME/.openclaw/workspace"
 mkdir -p "$OPENCLAW_HOME/.openclaw/agents/main/agent"
 
 # Pre-populate auth-profiles.json for the configured model provider
-if [ "$MODEL_PROVIDER" = "google-vertex" ] && [ "$HAS_LLM_API_KEY" = "true" ]; then
-  echo ">>> Configuring google-vertex auth (API key)..."
-  LLM_API_KEY=$$(gcloud secrets versions access latest --secret="openclaw-llm-api-key" --project="$PROJECT_ID" 2>/dev/null || echo "")
-  cat > "$OPENCLAW_HOME/.openclaw/agents/main/agent/auth-profiles.json" <<AUTHEOF
+if [ "$MODEL_PROVIDER" = "litellm" ]; then
+  echo ">>> Configuring LiteLLM auth profile..."
+  cat > "$OPENCLAW_HOME/.openclaw/agents/main/agent/auth-profiles.json" <<'AUTHEOF'
 {
   "version": 1,
   "profiles": {
-    "google-vertex:default": {
+    "litellm:default": {
       "type": "api_key",
-      "provider": "google-vertex",
-      "key": "$$LLM_API_KEY"
+      "provider": "litellm",
+      "key": "sk-litellm-local-only"
     }
   }
 }
@@ -378,9 +456,9 @@ NODE_BIN=$(command -v node || echo "/usr/bin/node")
 cat > /etc/systemd/system/openclaw-gateway.service <<SVCEOF
 [Unit]
 Description=OpenClaw Gateway (Secure Deployment)
-After=network-online.target docker.service
+After=network-online.target docker.service litellm.service
 Wants=network-online.target
-Requires=docker.service
+Requires=docker.service litellm.service
 
 [Service]
 Type=simple
