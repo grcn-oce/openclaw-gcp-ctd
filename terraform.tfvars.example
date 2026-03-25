@@ -18,7 +18,7 @@ gateway_auth_token = ""
 # Optional -- Brave Search API key
 brave_api_key = ""
 
-# Region & Zone
+# Compute Region & Zone
 region = "us-central1"
 zone   = "us-central1-c"
 
@@ -42,6 +42,4 @@ model_fallbacks  = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/g
 
 # LLM API Key (stored in Secret Manager)
 # Required for google-vertex: set your API key (from Google Cloud Console > APIs & Services > Credentials)
-# For OpenAI: set your OPENAI_API_KEY here
-# For Anthropic: set your ANTHROPIC_API_KEY here
 llm_api_key = ""
