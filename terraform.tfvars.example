@@ -37,8 +37,8 @@ openclaw_version = "latest"
 # Model Provider & Configuration
 # Supported providers: google, openai, anthropic
 model_provider   = "google"
-model_primary    = "google-gemini-cli/gemini-3.1-pro-preview"
-model_fallbacks  = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"
+model_primary    = "vertex_ai/gemini-3.1-pro"
+model_fallbacks  = "[\"vertex_ai/gemini-3.1-pro\", \"vertex_ai/gemini-3.1-flash\"]"
 
 # LLM API Key (stored in Secret Manager)
 # Leave empty if using Google Vertex AI with service account auth.

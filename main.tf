@@ -63,7 +63,7 @@ resource "random_id" "gateway_token" {
 locals {
   gateway_auth_token = var.gateway_auth_token != "" ? var.gateway_auth_token : random_id.gateway_token.hex
 
-  sandbox_image = var.sandbox_image != "" ? var.sandbox_image : "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.sandbox.repository_id}/openclaw-sandbox:latest"
+  sandbox_image = var.sandbox_image
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

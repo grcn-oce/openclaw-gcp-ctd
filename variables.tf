@@ -113,10 +113,9 @@ variable "openclaw_version" {
 }
 
 variable "sandbox_image" {
-  description = "Docker image for sandbox containers. Uses Artifact Registry by default."
+  description = "Docker image for sandbox containers."
   type        = string
-  default     = ""
-  # Empty = use the image built and pushed to the project's Artifact Registry.
+  default     = "node:20-slim"
 }
 
 variable "model_provider" {
@@ -133,13 +132,13 @@ variable "model_provider" {
 variable "model_primary" {
   description = "Primary model identifier for OpenClaw agents."
   type        = string
-  default     = "google-gemini-cli/gemini-3.1-pro-preview"
+  default     = "vertex_ai/gemini-3.1-pro"
 }
 
 variable "model_fallbacks" {
   description = "Fallback model identifiers (JSON array)."
   type        = string
-  default     = "[\"google/gemini-3.1-pro-preview\", \"google/gemini-3.1-flash-lite-preview\"]"
+  default     = "[\"vertex_ai/gemini-3.1-pro\", \"vertex_ai/gemini-3.1-flash\"]"
 }
 
 variable "llm_api_key" {
