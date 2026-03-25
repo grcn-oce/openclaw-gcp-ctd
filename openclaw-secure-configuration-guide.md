@@ -3,7 +3,7 @@
 A practitioner's guide to deploying and hardening OpenClaw on GCP. Covers every security-relevant configuration surface with GCP-native services, provides a click-to-deploy Terraform module, and includes a secure-by-default `openclaw.json`.
 
 **Applies to:** OpenClaw 2026.3.x on Google Cloud Platform
-**Last updated:** 2026-03-24
+**Last updated:** 2026-03-25
 
 ---
 
@@ -11,26 +11,27 @@ A practitioner's guide to deploying and hardening OpenClaw on GCP. Covers every 
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Click-to-Deploy with Terraform](#2-click-to-deploy-with-terraform)
-3. [GCP Secret Manager Integration](#3-gcp-secret-manager-integration)
-4. [VPC Network & Cloud Firewall](#4-vpc-network--cloud-firewall)
-5. [Identity-Aware Proxy (IAP) SSH Access](#5-identity-aware-proxy-iap-ssh-access)
-6. [Service Account & IAM (Least Privilege)](#6-service-account--iam-least-privilege)
-7. [GCE Instance Hardening](#7-gce-instance-hardening)
-8. [Gateway Authentication & Network Binding](#8-gateway-authentication--network-binding)
-9. [Channel Access Control (DMs & Groups)](#9-channel-access-control-dms--groups)
-10. [Session Isolation](#10-session-isolation)
-11. [Sandboxing on GCP](#11-sandboxing-on-gcp)
-12. [Artifact Registry for Sandbox Images](#12-artifact-registry-for-sandbox-images)
-13. [GCP Metadata Endpoint Protection](#13-gcp-metadata-endpoint-protection)
-14. [Tool Policy & Exec Approvals](#14-tool-policy--exec-approvals)
-15. [Logging with Cloud Logging](#15-logging-with-cloud-logging)
-16. [File Permissions](#16-file-permissions)
-17. [Plugin Security](#17-plugin-security)
-18. [Host-Level Hardening (GCE)](#18-host-level-hardening-gce)
-19. [Backups & Disaster Recovery](#19-backups--disaster-recovery)
-20. [Incident Response](#20-incident-response)
-21. [Ongoing Maintenance](#21-ongoing-maintenance)
-22. [Reference: Secure openclaw.json Template](#22-reference-secure-openclawjson-template)
+3. [LLM Authentication via LiteLLM + Vertex AI](#3-llm-authentication-via-litellm--vertex-ai)
+4. [GCP Secret Manager Integration](#4-gcp-secret-manager-integration)
+5. [VPC Network & Cloud Firewall](#5-vpc-network--cloud-firewall)
+6. [Identity-Aware Proxy (IAP) SSH Access](#6-identity-aware-proxy-iap-ssh-access)
+7. [Service Account & IAM (Least Privilege)](#7-service-account--iam-least-privilege)
+8. [GCE Instance Hardening](#8-gce-instance-hardening)
+9. [Gateway Authentication & Network Binding](#9-gateway-authentication--network-binding)
+10. [Channel Access Control (DMs & Groups)](#10-channel-access-control-dms--groups)
+11. [Session Isolation](#11-session-isolation)
+12. [Sandboxing on GCP](#12-sandboxing-on-gcp)
+13. [Artifact Registry for Sandbox Images](#13-artifact-registry-for-sandbox-images)
+14. [GCP Metadata Endpoint Protection](#14-gcp-metadata-endpoint-protection)
+15. [Tool Policy & Exec Approvals](#15-tool-policy--exec-approvals)
+16. [Logging with Cloud Logging](#16-logging-with-cloud-logging)
+17. [File Permissions](#17-file-permissions)
+18. [Plugin Security](#18-plugin-security)
+19. [Host-Level Hardening (GCE)](#19-host-level-hardening-gce)
+20. [Backups & Disaster Recovery](#20-backups--disaster-recovery)
+21. [Incident Response](#21-incident-response)
+22. [Ongoing Maintenance](#22-ongoing-maintenance)
+23. [Reference: Secure openclaw.json Template](#23-reference-secure-openclawjson-template)
 
 ---
 
@@ -42,7 +43,8 @@ graph TD
         subgraph SM["Secret Manager"]
             S1["telegram-bot-token"]
             S2["gateway-token"]
-            S3["brave-api-key"]
+            S3["llm-api-key (optional)"]
+            S4["brave-api-key (optional)"]
         end
 
         subgraph VPC["VPC (no default network)"]
@@ -51,6 +53,10 @@ graph TD
                     subgraph OC["OpenClaw Gateway (loopback:18789)"]
                         Sandbox["Docker Sandbox (net: none)"]
                     end
+                    subgraph LLP["LiteLLM Proxy (127.0.0.1:4000)"]
+                    end
+                    OC -->|OpenAI-format| LLP
+                    LLP -->|ADC / SA token| VertexAI["Vertex AI API (global)"]
                 end
             end
             NAT["Cloud NAT"] -->|outbound| Internet["Internet"]
@@ -71,10 +77,11 @@ graph TD
 
 | GCP Service | Purpose | Security Benefit |
 |-------------|---------|------------------|
-| **Secret Manager** | Store Telegram token, gateway token, API keys | No plaintext secrets on disk or in config |
+| **Secret Manager** | Store gateway token, Telegram token, API keys | No plaintext secrets on disk or in config |
 | **VPC + Cloud Firewall** | Network isolation | Deny-all ingress by default; no public IP |
 | **Cloud NAT** | Outbound internet access | Instance has no external IP |
 | **Identity-Aware Proxy** | SSH access | MFA-protected, identity-aware SSH; no SSH keys to manage |
+| **Vertex AI** | LLM inference (Gemini models) | Service account ADC auth via LiteLLM -- no API keys needed |
 | **Artifact Registry** | Private Docker image hosting | Sandbox images from trusted private registry |
 | **Shielded VM** | Secure Boot + vTPM + Integrity Monitoring | Prevents bootkit/rootkit attacks |
 | **OS Login** | Centralized SSH key management | IAM-based access; no project-wide SSH keys |
@@ -85,7 +92,7 @@ graph TD
 
 ## 2. Click-to-Deploy with Terraform
 
-The complete Terraform module is in `terraform-openclaw-gcp/`. It provisions all infrastructure with secure defaults.
+The Terraform configuration is in the project root. It provisions all infrastructure with secure defaults.
 
 ### 2.1 Prerequisites
 
@@ -98,14 +105,16 @@ unzip tf.zip && sudo mv terraform /usr/local/bin/
 gcloud auth application-default login
 ```
 
+A GCP project with billing enabled and the **Vertex AI API** enabled is required. The Terraform module automatically enables the required APIs (`compute`, `secretmanager`, `artifactregistry`, `iap`, `logging`, `iam`, `aiplatform`).
+
 ### 2.2 Quick Start
 
 ```bash
-cd terraform-openclaw-gcp/
+cd openclaw-gcp-ctd/
 
 # Copy and edit the example variables
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your project_id and telegram_bot_token
+# Edit terraform.tfvars with your project_id
 
 # Initialize, plan, and apply
 terraform init
@@ -113,15 +122,16 @@ terraform plan -out=deploy.tfplan
 terraform apply deploy.tfplan
 ```
 
-### 2.3 Terraform Module Structure
+> **No `llm_api_key` needed** -- the default `litellm` provider authenticates to Vertex AI via the VM's service account (ADC).
+
+### 2.3 Project Structure
 
 ```
-terraform-openclaw-gcp/
+openclaw-gcp-ctd/
 ├── main.tf                    # Core infrastructure (VPC, GCE, IAM, Secrets)
 ├── variables.tf               # All configurable parameters with secure defaults
 ├── outputs.tf                 # SSH command, instance IP, Artifact Registry URL
 ├── terraform.tfvars.example   # Example variables (copy to terraform.tfvars)
-├── .gitignore                 # Excludes .tfstate, terraform.tfvars
 ├── scripts/
 │   └── startup.sh             # GCE startup script (install + harden + configure)
 └── templates/
@@ -132,14 +142,16 @@ terraform-openclaw-gcp/
 
 | Resource | Configuration | Security Default |
 |----------|--------------|------------------|
+| `google_project_service` (x7) | Enables required APIs | Compute, Secret Manager, Artifact Registry, IAP, Logging, IAM, AI Platform |
 | `google_compute_network` | Custom VPC, no auto subnets | No default network |
 | `google_compute_subnetwork` | Private subnet with flow logs | `private_ip_google_access: true` |
 | `google_compute_firewall` (deny-all) | Priority 65534 deny-all ingress | Blocks all unsolicited traffic |
 | `google_compute_firewall` (IAP SSH) | Allow SSH from `35.235.240.0/20` only | IAP-authenticated SSH only |
+| `google_compute_firewall` (internal) | Allow intra-subnet traffic | Subnet CIDR only |
 | `google_compute_router_nat` | Cloud NAT for outbound | No external IP needed |
 | `google_service_account` | Dedicated SA | No Editor/Owner roles |
-| `google_secret_manager_secret` (x3) | Telegram token, gateway token, Brave key | Encrypted at rest, per-secret IAM |
-| `google_artifact_registry_repository` | Private Docker registry | Reader-only access for SA |
+| `google_secret_manager_secret` | Gateway token (always), Telegram/LLM/Brave (conditional) | Encrypted at rest, per-secret IAM |
+| `google_artifact_registry_repository` | Private Docker registry | Reader-only access for SA, cleanup policies |
 | `google_compute_instance` | Shielded VM, OS Login, no external IP | Secure Boot + vTPM + Integrity |
 
 ### 2.5 Secure-by-Default Terraform Configuration Highlights
@@ -178,8 +190,8 @@ metadata = {
 **Per-secret IAM (not project-level):**
 ```hcl
 # main.tf -- Each secret gets its own IAM binding
-resource "google_secret_manager_secret_iam_member" "telegram_accessor" {
-  secret_id = google_secret_manager_secret.telegram_bot_token.secret_id
+resource "google_secret_manager_secret_iam_member" "gateway_accessor" {
+  secret_id = google_secret_manager_secret.gateway_token.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.openclaw.email}"
 }
@@ -187,23 +199,124 @@ resource "google_secret_manager_secret_iam_member" "telegram_accessor" {
 
 ### 2.6 Post-Deploy Verification
 
-After `terraform apply`, verify the deployment:
+After `terraform apply`, wait for the startup script to complete (~5-7 minutes), then verify:
 
 ```bash
-# Get the SSH command from Terraform output
+# SSH into the instance via IAP
 $(terraform output -raw ssh_via_iap)
 
 # On the instance:
+sudo systemctl status litellm.service
 sudo systemctl status openclaw-gateway.service
-openclaw security audit --deep
-openclaw status
+curl http://127.0.0.1:4000/health
 ```
 
 ---
 
-## 3. GCP Secret Manager Integration
+## 3. LLM Authentication via LiteLLM + Vertex AI
 
-### 3.1 Why Secret Manager
+### 3.1 How It Works (Default Configuration)
+
+The default deployment uses a **LiteLLM proxy** running on the VM to route requests to **Vertex AI**. No LLM API keys are needed.
+
+```
+OpenClaw Gateway ──► LiteLLM Proxy (127.0.0.1:4000) ──► Vertex AI (Gemini 3.1 models)
+  (openai-completions format)    (ADC via SA token)        (vertex_ai/ prefix)
+```
+
+1. The VM runs with a dedicated service account that has `roles/aiplatform.user`
+2. **LiteLLM proxy** runs on `localhost:4000` and authenticates to Vertex AI using Application Default Credentials (ADC) from the VM's metadata server
+3. **OpenClaw** connects to LiteLLM as an `openai-completions` provider -- no API keys leave the VM
+4. LiteLLM translates OpenAI-format requests into Vertex AI API calls with OAuth2 tokens
+
+### 3.2 Model Configuration
+
+The `models.providers` section in `openclaw.json` configures the LiteLLM connection:
+
+```json
+{
+  "models": {
+    "providers": {
+      "litellm": {
+        "api": "openai-completions",
+        "baseUrl": "http://127.0.0.1:4000/v1",
+        "models": [
+          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview" },
+          { "id": "gemini-3.1-flash-lite-preview", "name": "Gemini 3.1 Flash Lite Preview" }
+        ]
+      }
+    }
+  }
+}
+```
+
+### 3.3 LiteLLM Proxy Configuration
+
+LiteLLM config is at `/etc/litellm/config.yaml`:
+
+```yaml
+model_list:
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: "my-gcp-project"
+      vertex_location: "global"
+  - model_name: gemini-3.1-flash-lite-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-lite-preview
+      vertex_project: "my-gcp-project"
+      vertex_location: "global"
+
+general_settings:
+  master_key: "sk-litellm-local-only"
+```
+
+The `master_key` is a local-only key used by OpenClaw to authenticate to the LiteLLM proxy on localhost. It never leaves the VM.
+
+To add more models, edit the config and restart:
+
+```bash
+sudo nano /etc/litellm/config.yaml
+sudo systemctl restart litellm.service openclaw-gateway.service
+```
+
+### 3.4 LiteLLM Systemd Service
+
+The LiteLLM proxy runs as a hardened systemd service:
+
+```ini
+[Service]
+Type=simple
+ExecStart=/opt/litellm/bin/litellm --config /etc/litellm/config.yaml --host 127.0.0.1 --port 4000
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+```
+
+Key security properties:
+- Binds to `127.0.0.1` only -- not exposed to the network
+- Runs with `NoNewPrivileges` and filesystem restrictions
+- Uses the VM's service account ADC -- no API keys stored
+
+### 3.5 Alternative: Direct API Key Providers
+
+You can bypass LiteLLM and use direct API key providers by setting `model_provider` and `llm_api_key`:
+
+| Provider | `model_provider` | `model_primary` | `llm_api_key` env var |
+|----------|-----------------|-----------------|----------------------|
+| LiteLLM + Vertex AI (default) | `litellm` | `litellm/gemini-3.1-pro-preview` | Not needed |
+| OpenAI | `openai` | `openai/gpt-4o` | `OPENAI_API_KEY` |
+| Anthropic | `anthropic` | `anthropic/claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
+| Google AI Studio | `google` | `google/gemini-3.1-pro-preview` | `GEMINI_API_KEY` |
+
+When `llm_api_key` is set, Terraform stores it in Secret Manager as `openclaw-llm-api-key` with per-secret IAM bindings.
+
+---
+
+## 4. GCP Secret Manager Integration
+
+### 4.1 Why Secret Manager
 
 Every secret in OpenClaw has an alternative injection method -- never store secrets in `openclaw.json`:
 
@@ -214,13 +327,14 @@ Every secret in OpenClaw has an alternative injection method -- never store secr
 | Shared `.env` files | `tokenFile` and environment variable injection |
 | No rotation workflow | Secret Manager versioning with automatic rotation |
 
-### 3.2 Secret Resolution Architecture
+### 4.2 Secret Resolution Architecture
 
 ```mermaid
 graph TD
     subgraph SM["GCP Secret Manager"]
         T["openclaw-telegram-bot-token"]
         G["openclaw-gateway-token"]
+        L["openclaw-llm-api-key"]
         B["openclaw-brave-api-key"]
     end
 
@@ -228,22 +342,25 @@ graph TD
         subgraph Secrets["~/.openclaw/secrets/"]
             F1["telegram-bot-token.txt (600)"]
             F2["gateway-token.txt (600)"]
-            F3["brave-api-key.txt (600)"]
-            F4["openclaw-env (600)"]
+            F3["llm-api-key.txt (600)"]
+            F4["brave-api-key.txt (600)"]
+            F5["openclaw-env (600)"]
         end
     end
 
     T -->|gcloud| F1
     G -->|gcloud| F2
-    B -->|gcloud| F3
+    L -->|gcloud| F3
+    B -->|gcloud| F4
 
     F1 -->|tokenFile| Config["openclaw.json"]
     F2 -->|env var| Env["OPENCLAW_GATEWAY_TOKEN"]
-    F3 -->|env var| BraveEnv["BRAVE_API_KEY"]
-    F4 -->|EnvironmentFile| Systemd["systemd service"]
+    F3 -->|env var| LLMEnv["OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY"]
+    F4 -->|env var| BraveEnv["BRAVE_API_KEY"]
+    F5 -->|EnvironmentFile| Systemd["systemd service"]
 ```
 
-### 3.3 Secret Resolution Chains
+### 4.3 Secret Resolution Chains
 
 OpenClaw resolves each secret through a precedence chain. Use the highest-priority external method available.
 
@@ -251,12 +368,13 @@ OpenClaw resolves each secret through a precedence chain. Use the highest-priori
 |--------|-----------|---------------------|------------|-------------------|
 | Telegram bot token | `channels.telegram.botToken` | `TELEGRAM_BOT_TOKEN` | `channels.telegram.tokenFile` | **tokenFile via Secret Manager** |
 | Gateway auth token | `gateway.auth.token` | `OPENCLAW_GATEWAY_TOKEN` | N/A | **env var via Secret Manager** |
+| LLM API key | N/A | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | N/A | **env var via Secret Manager** (not needed for `litellm` provider) |
 | Brave Search API key | `tools.web.search.apiKey` | `BRAVE_API_KEY` | N/A | **env var via Secret Manager** |
 | Discord bot token | `channels.discord.token` | `DISCORD_BOT_TOKEN` | N/A | **env var via Secret Manager** |
 | Slack bot/app tokens | `channels.slack.*Token` | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | N/A | **env var via Secret Manager** |
 | LINE channel secret | `channels.line.channelSecret` | N/A | `channels.line.secretFile` | **secretFile via Secret Manager** |
 
-### 3.4 Creating Secrets (Manual)
+### 4.4 Creating Secrets (Manual)
 
 If not using Terraform, create secrets manually:
 
@@ -265,12 +383,12 @@ PROJECT="your-project-id"
 SA_EMAIL="openclaw-gateway@${PROJECT}.iam.gserviceaccount.com"
 
 # Create secrets
-echo -n "YOUR_TELEGRAM_TOKEN" | \
-  gcloud secrets create openclaw-telegram-bot-token \
-    --data-file=- --project="$PROJECT"
-
 echo -n "$(openssl rand -hex 24)" | \
   gcloud secrets create openclaw-gateway-token \
+    --data-file=- --project="$PROJECT"
+
+echo -n "YOUR_TELEGRAM_TOKEN" | \
+  gcloud secrets create openclaw-telegram-bot-token \
     --data-file=- --project="$PROJECT"
 
 echo -n "YOUR_BRAVE_KEY" | \
@@ -278,7 +396,7 @@ echo -n "YOUR_BRAVE_KEY" | \
     --data-file=- --project="$PROJECT"
 
 # Grant access to the service account (per-secret, not project-level)
-for SECRET in openclaw-telegram-bot-token openclaw-gateway-token openclaw-brave-api-key; do
+for SECRET in openclaw-gateway-token openclaw-telegram-bot-token openclaw-brave-api-key; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --member="serviceAccount:$SA_EMAIL" \
     --role="roles/secretmanager.secretAccessor" \
@@ -286,44 +404,13 @@ for SECRET in openclaw-telegram-bot-token openclaw-gateway-token openclaw-brave-
 done
 ```
 
-### 3.5 Fetch Script (systemd ExecStartPre)
+### 4.5 Fetch Script (systemd ExecStartPre)
 
-The Terraform module deploys this script automatically. For manual setups:
+The startup script deploys `fetch-secrets.sh` automatically. It runs as `ExecStartPre` in the OpenClaw systemd unit, so secrets are always fresh before the gateway starts.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+For the `litellm` provider, the fetch script also sets `OPENAI_API_KEY=sk-litellm-local-only` so OpenClaw can authenticate to the local LiteLLM proxy.
 
-SECRETS_DIR="${HOME}/.openclaw/secrets"
-PROJECT="your-project-id"
-
-mkdir -p "${SECRETS_DIR}" && chmod 700 "${SECRETS_DIR}"
-
-fetch_secret() {
-  local secret_name="$1"
-  local dest_file="$2"
-  gcloud secrets versions access latest \
-    --secret="${secret_name}" \
-    --project="${PROJECT}" \
-    > "${dest_file}" 2>/dev/null
-  chmod 600 "${dest_file}"
-  echo "[fetch-secrets] Wrote ${dest_file}"
-}
-
-fetch_secret "openclaw-telegram-bot-token" "${SECRETS_DIR}/telegram-bot-token.txt"
-fetch_secret "openclaw-gateway-token"      "${SECRETS_DIR}/gateway-token.txt"
-fetch_secret "openclaw-brave-api-key"      "${SECRETS_DIR}/brave-api-key.txt"
-
-# Generate systemd EnvironmentFile
-ENV_FILE="${SECRETS_DIR}/openclaw-env"
-{
-  echo "OPENCLAW_GATEWAY_TOKEN=$(cat "${SECRETS_DIR}/gateway-token.txt")"
-  echo "BRAVE_API_KEY=$(cat "${SECRETS_DIR}/brave-api-key.txt")"
-} > "${ENV_FILE}"
-chmod 600 "${ENV_FILE}"
-```
-
-### 3.6 Config Using tokenFile
+### 4.6 Config Using tokenFile
 
 ```json
 {
@@ -335,7 +422,7 @@ chmod 600 "${ENV_FILE}"
 }
 ```
 
-### 3.7 Secret Rotation
+### 4.7 Secret Rotation
 
 ```bash
 # Create a new version (previous versions remain accessible until destroyed)
@@ -349,7 +436,7 @@ sudo systemctl restart openclaw-gateway.service
 gcloud secrets versions destroy 1 --secret=openclaw-telegram-bot-token
 ```
 
-### 3.8 CMEK (Customer-Managed Encryption Keys)
+### 4.8 CMEK (Customer-Managed Encryption Keys)
 
 For additional control, encrypt secrets with Cloud KMS:
 
@@ -368,9 +455,9 @@ gcloud secrets create openclaw-telegram-bot-token \
 
 ---
 
-## 4. VPC Network & Cloud Firewall
+## 5. VPC Network & Cloud Firewall
 
-### 4.1 Custom VPC (No Default Network)
+### 5.1 Custom VPC (No Default Network)
 
 The Terraform module creates a custom VPC instead of using the default network, which has overly permissive firewall rules.
 
@@ -394,7 +481,7 @@ resource "google_compute_subnetwork" "subnet" {
 }
 ```
 
-### 4.2 Cloud Firewall Rules
+### 5.2 Cloud Firewall Rules
 
 The module creates a **deny-all ingress** default with explicit allowlists:
 
@@ -404,11 +491,11 @@ The module creates a **deny-all ingress** default with explicit allowlists:
 | `allow-iap-ssh` | 1000 | ALLOW | `35.235.240.0/20` | TCP/22 | IAP-authenticated SSH |
 | `allow-internal` | 1000 | ALLOW | `10.10.0.0/24` | TCP/UDP/ICMP | Intra-subnet traffic |
 
-**No public-facing ports are opened.** The OpenClaw gateway binds to `127.0.0.1:18789` (loopback) and is never exposed to the network.
+**No public-facing ports are opened.** The OpenClaw gateway binds to `127.0.0.1:18789` (loopback) and the LiteLLM proxy binds to `127.0.0.1:4000` -- neither is exposed to the network.
 
-### 4.3 Cloud NAT (No External IP)
+### 5.3 Cloud NAT (No External IP)
 
-The instance has **no external IP**. Outbound internet access (for Telegram API, npm, etc.) goes through Cloud NAT:
+The instance has **no external IP**. Outbound internet access (for Telegram API, Vertex AI, npm, etc.) goes through Cloud NAT:
 
 ```hcl
 resource "google_compute_router_nat" "nat" {
@@ -423,15 +510,15 @@ resource "google_compute_router_nat" "nat" {
 }
 ```
 
-### 4.4 No Host-Level Firewall Needed
+### 5.4 No Host-Level Firewall Needed
 
-Network security is handled entirely by GCP VPC firewall rules (deny-all ingress + IAP SSH allowlist). No host-level `iptables` rules are configured — the VPC firewall operates at the network layer before traffic reaches the instance, and the instance has no external IP.
+Network security is handled entirely by GCP VPC firewall rules (deny-all ingress + IAP SSH allowlist). No host-level `iptables` rules are configured -- the VPC firewall operates at the network layer before traffic reaches the instance, and the instance has no external IP.
 
 ---
 
-## 5. Identity-Aware Proxy (IAP) SSH Access
+## 6. Identity-Aware Proxy (IAP) SSH Access
 
-### 5.1 Why IAP Instead of Direct SSH
+### 6.1 Why IAP Instead of Direct SSH
 
 | Feature | Direct SSH | IAP SSH |
 |---------|-----------|---------|
@@ -441,7 +528,7 @@ Network security is handled entirely by GCP VPC firewall rules (deny-all ingress
 | Audit trail | `auth.log` only | **Cloud Audit Logs** |
 | Network exposure | Port 22 open to internet | **Port 22 from 35.235.240.0/20 only** |
 
-### 5.2 Connecting via IAP
+### 6.2 Connecting via IAP
 
 ```bash
 # After terraform apply:
@@ -454,7 +541,7 @@ gcloud compute ssh openclaw-gateway \
 $(terraform output -raw ssh_via_iap)
 ```
 
-### 5.3 IAP IAM Permissions
+### 6.3 IAP IAM Permissions
 
 Grant SSH access to specific users:
 
@@ -468,11 +555,13 @@ gcloud projects add-iam-policy-binding your-project-id \
   --role="roles/compute.osLogin"
 ```
 
+The Terraform module can also grant these roles to a deployer service account via the `deployer_service_account` variable.
+
 ---
 
-## 6. Service Account & IAM (Least Privilege)
+## 7. Service Account & IAM (Least Privilege)
 
-### 6.1 Dedicated Service Account
+### 7.1 Dedicated Service Account
 
 The Terraform module creates a dedicated service account with minimal permissions:
 
@@ -480,10 +569,11 @@ The Terraform module creates a dedicated service account with minimal permission
 openclaw-gateway@PROJECT.iam.gserviceaccount.com
 ```
 
-### 6.2 IAM Bindings
+### 7.2 IAM Bindings
 
 | Role | Scope | Purpose |
 |------|-------|---------|
+| `roles/aiplatform.user` | Project | Vertex AI inference via LiteLLM proxy (ADC) |
 | `roles/secretmanager.secretAccessor` | Per-secret | Access individual secrets (not all secrets in project) |
 | `roles/logging.logWriter` | Project | Write logs to Cloud Logging |
 | `roles/monitoring.metricWriter` | Project | Write metrics to Cloud Monitoring |
@@ -499,14 +589,14 @@ openclaw-gateway@PROJECT.iam.gserviceaccount.com
 | `roles/compute.admin` | SA should not modify its own instance |
 | `roles/iam.serviceAccountTokenCreator` | Prevents token impersonation chains |
 
-### 6.3 Per-Secret IAM (Not Project-Level)
+### 7.3 Per-Secret IAM (Not Project-Level)
 
 Instead of granting `secretAccessor` at the project level, the Terraform module binds it per-secret:
 
 ```hcl
 # Each secret has its own IAM binding -- the SA can only access OpenClaw secrets
-resource "google_secret_manager_secret_iam_member" "telegram_accessor" {
-  secret_id = google_secret_manager_secret.telegram_bot_token.secret_id
+resource "google_secret_manager_secret_iam_member" "gateway_accessor" {
+  secret_id = google_secret_manager_secret.gateway_token.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.openclaw.email}"
 }
@@ -516,9 +606,9 @@ This means the service account cannot access any other secrets in the project.
 
 ---
 
-## 7. GCE Instance Hardening
+## 8. GCE Instance Hardening
 
-### 7.1 Shielded VM
+### 8.1 Shielded VM
 
 The Terraform module enables all three Shielded VM features:
 
@@ -528,7 +618,7 @@ The Terraform module enables all three Shielded VM features:
 | **vTPM** | Hardware-backed key storage and integrity measurement |
 | **Integrity Monitoring** | Detects changes to boot sequence, alerts in Cloud Logging |
 
-### 7.2 OS Login
+### 8.2 OS Login
 
 OS Login replaces project-wide SSH keys with IAM-based access:
 
@@ -540,7 +630,7 @@ metadata = {
 }
 ```
 
-### 7.3 Dedicated OS User
+### 8.3 Dedicated OS User
 
 The startup script creates a dedicated `openclaw` user:
 
@@ -550,9 +640,9 @@ useradd -m -s /bin/bash openclaw
 
 OpenClaw runs as this user, not as root. All files under `~/.openclaw/` are owned by this user with restrictive permissions.
 
-### 7.4 Systemd Service Hardening
+### 8.4 Systemd Service Hardening
 
-The systemd unit includes security directives:
+The OpenClaw gateway systemd unit includes security directives:
 
 ```ini
 [Service]
@@ -568,11 +658,13 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 ```
 
+The OpenClaw gateway service depends on both `docker.service` and `litellm.service`, ensuring the LiteLLM proxy is running before the gateway starts.
+
 ---
 
-## 8. Gateway Authentication & Network Binding
+## 9. Gateway Authentication & Network Binding
 
-### 8.1 Bind Mode
+### 9.1 Bind Mode
 
 ```json
 {
@@ -588,7 +680,7 @@ RestrictSUIDSGID=true
 | `"tailnet"` | Binds to Tailscale IP only | Multi-machine with Tailscale mesh. |
 | `"lan"` | Binds to `0.0.0.0` (all interfaces) | **Avoid.** Even with VPC firewall, defense-in-depth requires loopback binding. |
 
-### 8.2 Auth Mode
+### 9.2 Auth Mode
 
 ```json
 {
@@ -607,7 +699,7 @@ Generate a strong token:
 openssl rand -hex 24
 ```
 
-### 8.3 Control UI Security
+### 9.3 Control UI Security
 
 ```json
 {
@@ -624,9 +716,9 @@ Both must remain `false` in production.
 
 ---
 
-## 9. Channel Access Control (DMs & Groups)
+## 10. Channel Access Control (DMs & Groups)
 
-### 9.1 DM Policy
+### 10.1 DM Policy
 
 ```json
 {
@@ -645,7 +737,7 @@ Both must remain `false` in production.
 | `"open"` | Anyone can DM (requires explicit `"*"` in allowlist) | **Low -- avoid in production** |
 | `"disabled"` | All DMs ignored | **Maximum** |
 
-### 9.2 Group Policy
+### 10.2 Group Policy
 
 ```json
 {
@@ -663,7 +755,7 @@ Both must remain `false` in production.
 | `"open"` | Responds in any group it's added to | **Low** |
 | `"disabled"` | Ignores all group messages | **Maximum** |
 
-### 9.3 Mention Gating in Groups
+### 10.3 Mention Gating in Groups
 
 ```json
 {
@@ -684,9 +776,9 @@ Both must remain `false` in production.
 
 ---
 
-## 10. Session Isolation
+## 11. Session Isolation
 
-### 10.1 DM Scope
+### 11.1 DM Scope
 
 ```json
 {
@@ -707,9 +799,9 @@ Both must remain `false` in production.
 
 ---
 
-## 11. Sandboxing on GCP
+## 12. Sandboxing on GCP
 
-### 11.1 Enable Sandboxing
+### 12.1 Enable Sandboxing
 
 ```json
 {
@@ -730,7 +822,7 @@ Both must remain `false` in production.
 | `"non-main"` | Sandboxes subagents only |
 | `"all"` | **Recommended.** All agents sandboxed. |
 
-### 11.2 Docker Hardening (Secure Defaults)
+### 12.2 Docker Hardening (Secure Defaults)
 
 The secure `openclaw.json` configures:
 
@@ -742,11 +834,11 @@ The secure `openclaw.json` configures:
         "mode": "all",
         "workspaceAccess": "ro",
         "docker": {
-          "image": "us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:latest",
+          "image": "node:20-slim",
           "network": "none",
           "tmpfs": ["/tmp:exec,mode=1777"],
           "memory": "512m",
-          "cpus": "1.0",
+          "cpus": 1.0,
           "pidsLimit": 256
         },
         "browser": {
@@ -760,10 +852,10 @@ The secure `openclaw.json` configures:
 
 | Control | Secure Default | Why |
 |---------|---------------|-----|
-| Image source | Private Artifact Registry | No public Docker Hub supply-chain risk |
+| Image source | `node:20-slim` (or private Artifact Registry) | Minimal attack surface |
 | Network | `"none"` | No outbound access, no metadata endpoint access |
 | Memory | `"512m"` | Prevents OOM-killing the gateway |
-| CPU | `"1.0"` | Prevents CPU exhaustion |
+| CPU | `1.0` | Prevents CPU exhaustion |
 | PID limit | `256` | Prevents fork bombs |
 | Workspace | `"ro"` | Read-only workspace mount |
 | ReadonlyRootfs | `true` (Docker default) | Prevents filesystem modification |
@@ -771,7 +863,30 @@ The secure `openclaw.json` configures:
 | No-new-privileges | `true` (Docker default) | Prevents SUID/setuid escalation |
 | Browser control | `false` | Sandboxed agents cannot control host browser |
 
-### 11.3 When Sandbox Needs Network
+To use a private Artifact Registry image instead, set `sandbox_image` in `terraform.tfvars`:
+
+```hcl
+sandbox_image = "us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:v1.0.0"
+```
+
+### 12.3 Agent Defaults
+
+The template also configures agent-level defaults:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/home/openclaw/.openclaw/workspace",
+      "compaction": { "mode": "safeguard" },
+      "maxConcurrent": 4,
+      "subagents": { "maxConcurrent": 8 }
+    }
+  }
+}
+```
+
+### 12.4 When Sandbox Needs Network
 
 If the sandbox requires internet access (e.g., for `terraform init`), switch to `"bridge"` and block the metadata endpoint:
 
@@ -783,13 +898,13 @@ If the sandbox requires internet access (e.g., for `terraform init`), switch to 
 }
 ```
 
-**You MUST also block the GCP metadata endpoint** -- see [Section 13](#13-gcp-metadata-endpoint-protection).
+**You MUST also block the GCP metadata endpoint** -- see [Section 14](#14-gcp-metadata-endpoint-protection).
 
 ---
 
-## 12. Artifact Registry for Sandbox Images
+## 13. Artifact Registry for Sandbox Images
 
-### 12.1 Private Registry
+### 13.1 Private Registry
 
 The Terraform module creates a private Artifact Registry repository:
 
@@ -797,16 +912,13 @@ The Terraform module creates a private Artifact Registry repository:
 us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/
 ```
 
-### 12.2 Building and Pushing a Sandbox Image
-
-Use the Dockerfile from `terraform-node-container/`:
+### 13.2 Building and Pushing a Sandbox Image
 
 ```bash
 # Authenticate Docker to Artifact Registry
 gcloud auth configure-docker us-central1-docker.pkg.dev
 
 # Build the sandbox image
-cd terraform-node-container/
 docker build -t us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:v1.0.0 .
 
 # Push to Artifact Registry
@@ -818,17 +930,17 @@ docker tag us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:
 docker push us-central1-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:latest
 ```
 
-### 12.3 Image Security Best Practices
+### 13.3 Image Security Best Practices
 
 | Practice | Implementation |
 |----------|---------------|
 | Pin image tags | Use `v1.0.0`, not `latest`, in production config |
 | Scan for vulnerabilities | `gcloud artifacts docker images scan IMAGE_URI` |
-| Minimal base image | Use `node:trixie-slim` (smaller attack surface) |
+| Minimal base image | Use `node:20-slim` (smaller attack surface) |
 | Cleanup policy | Artifact Registry keeps only 5 most recent versions |
 | Non-root user | Dockerfile ends with `USER node` |
 
-### 12.4 Cleanup Policy
+### 13.4 Cleanup Policy
 
 The Terraform module configures automatic cleanup:
 
@@ -844,9 +956,9 @@ cleanup_policies {
 
 ---
 
-## 13. GCP Metadata Endpoint Protection
+## 14. GCP Metadata Endpoint Protection
 
-### 13.1 The Risk
+### 14.1 The Risk
 
 GCE instances have a metadata endpoint at `169.254.169.254` that provides service account tokens. If the sandbox container has network access (`bridge` mode), it can request these tokens and impersonate the instance's service account.
 
@@ -857,11 +969,11 @@ curl -s -H "Metadata-Flavor: Google" \
 # Returns a valid access token!
 ```
 
-### 13.2 Defense: Network None (Default)
+### 14.2 Defense: Network None (Default)
 
-The secure `openclaw.json` uses `"network": "none"`, which completely isolates the container. This is the strongest protection and the default in the Terraform module.
+The secure `openclaw.json` uses `"network": "none"`, which completely isolates the container. This is the strongest protection and the default in this deployment.
 
-### 13.3 Defense: iptables Block (If Bridge Needed)
+### 14.3 Defense: iptables Block (If Bridge Needed)
 
 If the sandbox requires bridge networking, manually block the metadata endpoint on the host:
 
@@ -874,7 +986,7 @@ sudo apt-get install -y iptables-persistent
 sudo netfilter-persistent save
 ```
 
-**Note:** The default Terraform deployment uses `"network": "none"` (Section 13.2), which makes this unnecessary. Only apply this if you switch to bridge networking.
+**Note:** The default deployment uses `"network": "none"` (Section 14.2), which makes this unnecessary. Only apply this if you switch to bridge networking.
 
 **Verify from inside a container:**
 
@@ -885,9 +997,10 @@ docker exec <container-name> \
 # Expected: connection timeout / empty response
 ```
 
-### 13.4 Defense: Minimal SA Permissions
+### 14.4 Defense: Minimal SA Permissions
 
 Even if the metadata endpoint is accessible, the service account has only:
+- `aiplatform.user` (Vertex AI inference)
 - `secretmanager.secretAccessor` (per-secret)
 - `logging.logWriter`
 - `monitoring.metricWriter`
@@ -897,9 +1010,9 @@ It cannot create VMs, modify IAM, access Cloud Storage, or perform any administr
 
 ---
 
-## 14. Tool Policy & Exec Approvals
+## 15. Tool Policy & Exec Approvals
 
-### 14.1 Tool Allow/Deny Lists
+### 15.1 Tool Allow/Deny Lists
 
 ```json
 {
@@ -908,7 +1021,6 @@ It cannot create VMs, modify IAM, access Cloud Storage, or perform any administr
     "exec": {
       "security": "allowlist",
       "ask": "on-miss",
-      "askFallback": "deny",
       "safeBins": ["jq", "grep", "cut", "sort", "uniq", "head", "tail", "tr", "wc"]
     },
     "elevated": {
@@ -920,7 +1032,7 @@ It cannot create VMs, modify IAM, access Cloud Storage, or perform any administr
 
 **Deny always wins.** Each level can only further restrict.
 
-### 14.2 Tool Groups
+### 15.2 Tool Groups
 
 | Group | Tools included |
 |-------|---------------|
@@ -932,7 +1044,7 @@ It cannot create VMs, modify IAM, access Cloud Storage, or perform any administr
 | `group:automation` | cron, gateway |
 | `group:messaging` | message |
 
-### 14.3 Per-Agent Tool Restrictions
+### 15.3 Per-Agent Tool Restrictions
 
 ```json
 {
@@ -949,7 +1061,7 @@ It cannot create VMs, modify IAM, access Cloud Storage, or perform any administr
 }
 ```
 
-### 14.4 Elevated Execution
+### 15.4 Elevated Execution
 
 Keep disabled unless specifically needed:
 
@@ -965,9 +1077,9 @@ Keep disabled unless specifically needed:
 
 ---
 
-## 15. Logging with Cloud Logging
+## 16. Logging with Cloud Logging
 
-### 15.1 OpenClaw Log Configuration
+### 16.1 OpenClaw Log Configuration
 
 ```json
 {
@@ -990,10 +1102,10 @@ Keep disabled unless specifically needed:
 
 The `ya29\\.` pattern redacts GCP OAuth2 access tokens that might appear in logs.
 
-### 15.2 Cloud Logging Integration
+### 16.2 Cloud Logging Integration
 
 The GCE instance's `ops-agent` (or native Cloud Logging agent) automatically ships:
-- Systemd journal entries (including OpenClaw gateway logs)
+- Systemd journal entries (including OpenClaw gateway and LiteLLM proxy logs)
 - Startup script output (`/var/log/openclaw-startup.log`)
 - SSH access logs
 
@@ -1005,7 +1117,7 @@ gcloud logging read 'resource.type="gce_instance" AND resource.labels.instance_i
   --format="table(timestamp,textPayload)"
 ```
 
-### 15.3 Log-Based Alerts
+### 16.3 Log-Based Alerts
 
 Create alerts for security events:
 
@@ -1023,7 +1135,7 @@ gcloud logging metrics create openclaw-auth-failures \
   --project=your-project-id
 ```
 
-### 15.4 Session Transcripts
+### 16.4 Session Transcripts
 
 Session history is stored at:
 
@@ -1035,9 +1147,9 @@ These contain full conversation transcripts. The directory permissions must be `
 
 ---
 
-## 16. File Permissions
+## 17. File Permissions
 
-### 16.1 Required Permissions
+### 17.1 Required Permissions
 
 | Path | Octal | Why |
 |------|-------|-----|
@@ -1053,7 +1165,7 @@ These contain full conversation transcripts. The directory permissions must be `
 | `~/.openclaw/logs/` | `700` | Audit logs with config change history. |
 | `~/.openclaw/.env` | `600` | Environment file with secrets. |
 
-### 16.2 Quick Fix
+### 17.2 Quick Fix
 
 ```bash
 chmod 700 ~/.openclaw
@@ -1071,9 +1183,22 @@ openclaw security audit --fix
 
 ---
 
-## 17. Plugin Security
+## 18. Plugin Security
 
-### 17.1 Plugin Allowlist
+### 18.1 Plugin Allowlist
+
+The default deployment uses an empty allowlist, meaning no plugins are activated by default:
+
+```json
+{
+  "plugins": {
+    "enabled": true,
+    "allow": []
+  }
+}
+```
+
+To enable specific plugins, add them to the `allow` list:
 
 ```json
 {
@@ -1084,9 +1209,9 @@ openclaw security audit --fix
 }
 ```
 
-**Deny always wins.** Without an explicit `allow` list, any installed plugin can activate.
+**Deny always wins.** Without an explicit `allow` list entry, no plugin can activate.
 
-### 17.2 Plugin Integrity Verification
+### 18.2 Plugin Integrity Verification
 
 OpenClaw records SHA-512 and SHA-1 hashes at install time:
 
@@ -1104,7 +1229,7 @@ OpenClaw records SHA-512 and SHA-1 hashes at install time:
 }
 ```
 
-### 17.3 Plugin Rules
+### 18.3 Plugin Rules
 
 - Review plugin source before installing
 - Pin exact versions (`openclaw-plugin-vt-sentinel@0.10.0`)
@@ -1113,9 +1238,9 @@ OpenClaw records SHA-512 and SHA-1 hashes at install time:
 
 ---
 
-## 18. Host-Level Hardening (GCE)
+## 19. Host-Level Hardening (GCE)
 
-### 18.1 SSH (Applied by Startup Script)
+### 19.1 SSH (Applied by Startup Script)
 
 ```
 PermitRootLogin no
@@ -1123,7 +1248,7 @@ PasswordAuthentication no
 X11Forwarding no
 ```
 
-### 18.2 Docker Daemon (Applied by Startup Script)
+### 19.2 Docker Daemon (Applied by Startup Script)
 
 ```json
 {
@@ -1138,14 +1263,14 @@ X11Forwarding no
 }
 ```
 
-### 18.3 Automatic Security Updates (Applied by Startup Script)
+### 19.3 Automatic Security Updates (Applied by Startup Script)
 
 ```bash
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 ```
 
-### 18.4 GCE-Specific Hardening
+### 19.4 GCE-Specific Hardening
 
 | Control | Setting | Applied By |
 |---------|---------|-----------|
@@ -1158,9 +1283,9 @@ APT::Periodic::Unattended-Upgrade "1";
 
 ---
 
-## 19. Backups & Disaster Recovery
+## 20. Backups & Disaster Recovery
 
-### 19.1 Persistent Disk Snapshots
+### 20.1 Persistent Disk Snapshots
 
 ```bash
 # Create a snapshot schedule (daily, 7-day retention)
@@ -1178,11 +1303,11 @@ gcloud compute disks add-resource-policies openclaw-gateway \
   --zone=us-central1-c
 ```
 
-### 19.2 Secrets Are in Secret Manager
+### 20.2 Secrets Are in Secret Manager
 
 Since secrets are stored in GCP Secret Manager (not on disk), they survive instance recreation. Terraform can redeploy the entire stack from scratch.
 
-### 19.3 Backup Security Rules
+### 20.3 Backup Security Rules
 
 - Snapshots are encrypted at rest by GCP (use CMEK for additional control)
 - Never transfer `~/.openclaw/` over unencrypted channels
@@ -1191,7 +1316,7 @@ Since secrets are stored in GCP Secret Manager (not on disk), they survive insta
 
 ---
 
-## 20. Incident Response
+## 21. Incident Response
 
 ### Step 1: Stop the Blast Radius
 
@@ -1237,6 +1362,9 @@ gcloud secrets versions destroy OLD_VERSION --secret=openclaw-gateway-token --pr
 # Check gateway logs
 sudo journalctl -u openclaw-gateway.service --since="1 hour ago"
 
+# Check LiteLLM logs
+sudo journalctl -u litellm.service --since="1 hour ago"
+
 # Check Cloud Logging
 gcloud logging read 'resource.type="gce_instance" AND textPayload=~"suspicious"' \
   --project="$PROJECT" --limit=50
@@ -1256,7 +1384,7 @@ openclaw security audit --deep
 
 ---
 
-## 21. Ongoing Maintenance
+## 22. Ongoing Maintenance
 
 | Task | Frequency | Command / Action |
 |------|-----------|-----------------|
@@ -1272,14 +1400,16 @@ openclaw security audit --deep
 | Check Secret Manager access logs | Monthly | Cloud Audit Logs in Console |
 | Update sandbox image | When Dockerfile changes | Rebuild + push to Artifact Registry |
 | Review VPC flow logs | As needed | Cloud Console > VPC > Flow Logs |
+| Check LiteLLM proxy health | Weekly | `curl http://127.0.0.1:4000/health` |
+| Update LiteLLM | When new versions release | Update venv, restart `litellm.service` |
 
 ---
 
-## 22. Reference: Secure openclaw.json Template
+## 23. Reference: Secure openclaw.json Template
 
-The complete secure-by-default configuration. This is what the Terraform module deploys automatically.
+The complete secure-by-default configuration. This is what the startup script deploys automatically.
 
-The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
+The template file is at `templates/openclaw-secure.json`.
 
 ```json5
 {
@@ -1296,16 +1426,22 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
     }
   },
 
-  // Channels -- pairing + allowlist, token via Secret Manager file
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "tokenFile": "/home/openclaw/.openclaw/secrets/telegram-bot-token.txt",
-      "dmPolicy": "pairing",
-      "groupPolicy": "allowlist",
-      "streaming": "partial"
+  // Model providers -- LiteLLM proxy for Vertex AI (default)
+  "models": {
+    "providers": {
+      "litellm": {
+        "api": "openai-completions",
+        "baseUrl": "http://127.0.0.1:4000/v1",
+        "models": [
+          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview" },
+          { "id": "gemini-3.1-flash-lite-preview", "name": "Gemini 3.1 Flash Lite Preview" }
+        ]
+      }
     }
   },
+
+  // Channels -- configured conditionally by startup script
+  "channels": {},
 
   // Session -- isolate per user per channel
   "session": { "dmScope": "per-channel-peer" },
@@ -1313,18 +1449,26 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
   // Mention gating
   "messages": { "ackReactionScope": "group-mentions" },
 
-  // Sandboxing -- all agents, read-only workspace, no network, resource limits
+  // Agents -- sandboxed, resource-limited, with model and workspace defaults
   "agents": {
     "defaults": {
+      "model": {
+        "primary": "litellm/gemini-3.1-pro-preview",
+        "fallbacks": ["litellm/gemini-3.1-pro-preview", "litellm/gemini-3.1-flash-lite-preview"]
+      },
+      "workspace": "/home/openclaw/.openclaw/workspace",
+      "compaction": { "mode": "safeguard" },
+      "maxConcurrent": 4,
+      "subagents": { "maxConcurrent": 8 },
       "sandbox": {
         "mode": "all",
         "workspaceAccess": "ro",
         "docker": {
-          "image": "REGION-docker.pkg.dev/PROJECT/openclaw-sandbox/openclaw-sandbox:latest",
+          "image": "node:20-slim",
           "network": "none",
           "tmpfs": ["/tmp:exec,mode=1777"],
           "memory": "512m",
-          "cpus": "1.0",
+          "cpus": 1.0,
           "pidsLimit": 256
         },
         "browser": { "allowHostControl": false }
@@ -1338,7 +1482,6 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
     "exec": {
       "security": "allowlist",
       "ask": "on-miss",
-      "askFallback": "deny",
       "safeBins": ["jq", "grep", "cut", "sort", "uniq", "head", "tail", "tr", "wc"]
     },
     "elevated": { "enabled": false },
@@ -1364,10 +1507,10 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
     ]
   },
 
-  // Plugins -- explicit allowlist only
+  // Plugins -- empty allowlist (no plugins active by default)
   "plugins": {
     "enabled": true,
-    "allow": ["openclaw-plugin-vt-sentinel"]
+    "allow": []
   },
 
   // Discovery -- off (no mDNS on GCE)
@@ -1392,6 +1535,7 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
 
 | Setting | Generic Guide | GCP Guide | Why |
 |---------|-------------|-----------|-----|
+| LLM authentication | API keys in config/env | **LiteLLM proxy + Vertex AI ADC (no API keys)** | Service account auth, no keys to manage or rotate |
 | Secrets storage | Environment variables or tokenFile | **GCP Secret Manager + fetch script** | Encrypted at rest, IAM-controlled, versioned, auditable |
 | Network binding | Loopback (same) | Loopback + **no external IP + VPC deny-all** | Triple-layer network isolation |
 | SSH access | Key-based with `PasswordAuthentication no` | **IAP tunnel + OS Login** | MFA, no SSH keys, Cloud Audit Logs |
@@ -1405,4 +1549,4 @@ The template file is at `terraform-openclaw-gcp/templates/openclaw-secure.json`.
 
 ---
 
-*Generated for OpenClaw 2026.3.x on Google Cloud Platform. The Terraform module is in `terraform-openclaw-gcp/`. Run `terraform apply` for click-to-deploy, then `openclaw security audit --deep` to validate.*
+*Generated for OpenClaw 2026.3.x on Google Cloud Platform. The Terraform configuration is in the project root. Run `terraform apply` for click-to-deploy, then `openclaw security audit --deep` to validate.*

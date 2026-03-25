@@ -124,8 +124,8 @@ variable "model_provider" {
   default     = "litellm"
 
   validation {
-    condition     = contains(["litellm", "google-vertex", "google", "openai", "anthropic"], var.model_provider)
-    error_message = "model_provider must be one of: litellm, google-vertex, google, openai, anthropic."
+    condition     = contains(["litellm", "google", "openai", "anthropic"], var.model_provider)
+    error_message = "model_provider must be one of: litellm, google, openai, anthropic."
   }
 }
 
