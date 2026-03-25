@@ -317,7 +317,7 @@ mkdir -p "$OPENCLAW_HOME/.openclaw/agents/main/agent"
 # Pre-populate auth-profiles.json for the configured model provider
 if [ "$MODEL_PROVIDER" = "google-vertex" ] && [ "$HAS_LLM_API_KEY" = "true" ]; then
   echo ">>> Configuring google-vertex auth (API key)..."
-  LLM_API_KEY=\$(gcloud secrets versions access latest --secret="openclaw-llm-api-key" --project="$PROJECT_ID" 2>/dev/null || echo "")
+  LLM_API_KEY=$$(gcloud secrets versions access latest --secret="openclaw-llm-api-key" --project="$PROJECT_ID" 2>/dev/null || echo "")
   cat > "$OPENCLAW_HOME/.openclaw/agents/main/agent/auth-profiles.json" <<AUTHEOF
 {
   "version": 1,
@@ -325,7 +325,7 @@ if [ "$MODEL_PROVIDER" = "google-vertex" ] && [ "$HAS_LLM_API_KEY" = "true" ]; t
     "google-vertex:default": {
       "type": "api_key",
       "provider": "google-vertex",
-      "key": "\$LLM_API_KEY"
+      "key": "$$LLM_API_KEY"
     }
   }
 }
