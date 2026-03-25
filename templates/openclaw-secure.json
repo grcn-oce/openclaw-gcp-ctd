@@ -103,7 +103,7 @@
 
   "plugins": {
     "enabled": true,
-    "allow": ["openclaw-plugin-vt-sentinel"]
+    "allow": []
   },
 
   "discovery": {

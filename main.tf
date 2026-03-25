@@ -45,6 +45,7 @@ resource "google_project_service" "apis" {
     "iap.googleapis.com",
     "logging.googleapis.com",
     "iam.googleapis.com",
+    "aiplatform.googleapis.com",
   ])
 
   project            = var.project_id
@@ -203,6 +204,13 @@ resource "google_project_iam_member" "logging_writer" {
 resource "google_project_iam_member" "monitoring_writer" {
   project = var.project_id
   role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.openclaw.email}"
+}
+
+# Vertex AI access for LLM inference via service account (ADC)
+resource "google_project_iam_member" "vertex_ai_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
   member  = "serviceAccount:${google_service_account.openclaw.email}"
 }
 

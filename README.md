@@ -63,10 +63,10 @@ This module provisions:
    instance_name      = "openclaw-gateway"
    machine_type       = "e2-standard-2"
    boot_disk_size_gb  = 30
-   model_provider     = "google"
-   model_primary      = "vertex_ai/gemini-3.1-pro"
-   model_fallbacks    = "[\"vertex_ai/gemini-3.1-pro\", \"vertex_ai/gemini-3.1-flash\"]"  # Change as you see fit
-   llm_api_key        = ""  # Leave empty if using Google Vertex AI with service account auth
+   model_provider     = "google-vertex"
+   model_primary      = "google-vertex/gemini-3.1-pro-preview"
+   model_fallbacks    = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
+   llm_api_key        = "AIza..."  # Required — API key from Google Cloud console (APIs & Services > Credentials)
    ```
 
 3. **Deploy:**
@@ -177,14 +177,16 @@ Set `model_provider`, `model_primary`, `model_fallbacks`, and `llm_api_key` in y
 - Grant the gateway service account read access
 - Automatically fetch and export it as the correct env var at startup
 
-#### Google Vertex AI (Gemini 3.1 Pro)
+#### Google Vertex AI (Gemini 3.1 Pro) — Default
 
 ```hcl
-model_provider  = "google"
-model_primary   = "vertex_ai/gemini-3.1-pro"
-model_fallbacks = "[\"vertex_ai/gemini-3.1-pro\", \"vertex_ai/gemini-3.1-flash\"]"
-llm_api_key     = ""  # Leave empty — Vertex AI uses service account auth, no API key needed
+model_provider  = "google-vertex"
+model_primary   = "google-vertex/gemini-3.1-pro-preview"
+model_fallbacks = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
+llm_api_key     = "AIza..."  # Required — API key from Google Cloud console (APIs & Services > Credentials)
 ```
+
+> **Note:** A Gemini API key is required even when using the `google-vertex` provider. Create one in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) under **APIs & Services > Credentials**, with the Vertex AI API enabled. The key is stored securely in GCP Secret Manager and written to the agent's `auth-profiles.json` at startup.
 
 #### OpenAI
 
@@ -598,8 +600,8 @@ sudo cat /home/openclaw/.openclaw/secrets/openclaw-env
 | `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `sandbox_image` | No | `""` | Docker image for sandbox containers |
 | `model_provider` | No | `google` | LLM provider: `google`, `openai`, or `anthropic` |
-| `model_primary` | No | `vertex_ai/gemini-3.1-pro` | Primary model for OpenClaw agents (Vertex AI endpoint) |
-| `model_fallbacks` | No | `["vertex_ai/gemini-3.1-pro", ...]` | Fallback model identifiers (JSON array) |
+| `model_primary` | No | `google-vertex/gemini-3.1-pro` | Primary model for OpenClaw agents (Vertex AI endpoint) |
+| `model_fallbacks` | No | `["google-vertex/gemini-3.1-pro", ...]` | Fallback model identifiers (JSON array) |
 | `llm_api_key` | No | `""` | LLM provider API key (stored in Secret Manager) |
 | `deployer_service_account` | No | `""` | SA email granted IAP + OS Login access |
 | `labels` | No | `{app="openclaw", ...}` | Labels to apply to all resources |

@@ -119,30 +119,30 @@ variable "sandbox_image" {
 }
 
 variable "model_provider" {
-  description = "LLM provider: google, openai, or anthropic. Determines which API key env var is set."
+  description = "LLM provider: google-vertex (ADC via service account), google (Gemini API key), openai, or anthropic."
   type        = string
-  default     = "google"
+  default     = "google-vertex"
 
   validation {
-    condition     = contains(["google", "openai", "anthropic"], var.model_provider)
-    error_message = "model_provider must be one of: google, openai, anthropic."
+    condition     = contains(["google-vertex", "google", "openai", "anthropic"], var.model_provider)
+    error_message = "model_provider must be one of: google-vertex, google, openai, anthropic."
   }
 }
 
 variable "model_primary" {
-  description = "Primary model identifier for OpenClaw agents."
+  description = "Primary model identifier for OpenClaw agents. Use 'google-vertex/' prefix for Vertex AI."
   type        = string
-  default     = "vertex_ai/gemini-3.1-pro"
+  default     = "google-vertex/gemini-3.1-pro-preview"
 }
 
 variable "model_fallbacks" {
-  description = "Fallback model identifiers (JSON array)."
+  description = "Fallback model identifiers (JSON array). Use 'google-vertex/' prefix for Vertex AI."
   type        = string
-  default     = "[\"vertex_ai/gemini-3.1-pro\", \"vertex_ai/gemini-3.1-flash\"]"
+  default     = "[\"google-vertex/gemini-3.1-pro-preview\", \"google-vertex/gemini-3.1-flash-lite-preview\"]"
 }
 
 variable "llm_api_key" {
-  description = "API key for the LLM provider (stored in Secret Manager). Leave empty if using Google Vertex AI with service account auth."
+  description = "API key for the LLM provider (stored in Secret Manager). Required for google-vertex provider (Gemini API key)."
   type        = string
   sensitive   = true
   default     = ""

@@ -122,6 +122,9 @@ echo ">>> Installing OpenClaw $${OPENCLAW_VERSION}..."
 npm install -g "openclaw@$${OPENCLAW_VERSION}" --ignore-scripts 2>/dev/null || \
   npm install -g openclaw --ignore-scripts
 
+echo ">>> Pulling sandbox Docker image ($SANDBOX_IMAGE)..."
+docker pull "$SANDBOX_IMAGE"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Configure Secrets (GCP Secret Manager)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -159,7 +162,14 @@ ENV_FILE="\$SECRETS_DIR/openclaw-env"
   echo "OPENCLAW_GATEWAY_TOKEN=\$(cat "\$SECRETS_DIR/gateway-token.txt")"
 FETCHEOF
 
-if [ "$HAS_LLM_API_KEY" = "true" ]; then
+if [ "$MODEL_PROVIDER" = "google-vertex" ]; then
+  # Vertex AI uses ADC (service account on the VM) -- no API key needed.
+  # Set project and location so the Vertex AI SDK knows where to send requests.
+cat >> "$SECRETS_DIR/fetch-secrets.sh" <<FETCHEOF_VERTEX
+  echo "GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
+  echo "GOOGLE_CLOUD_LOCATION=global"
+FETCHEOF_VERTEX
+elif [ "$HAS_LLM_API_KEY" = "true" ]; then
   # Map provider to the correct env var name
   case "$MODEL_PROVIDER" in
     openai)    LLM_ENV_VAR="OPENAI_API_KEY" ;;
@@ -275,7 +285,7 @@ cat > "$OPENCLAW_HOME/.openclaw/openclaw.json" <<CONFIGEOF
   },
   "plugins": {
     "enabled": true,
-    "allow": ["openclaw-plugin-vt-sentinel"]
+    "allow": []
   },
   "discovery": {
     "mdns": { "mode": "off" }
@@ -302,7 +312,25 @@ CONFIGEOF
 
 echo ">>> Setting file permissions..."
 mkdir -p "$OPENCLAW_HOME/.openclaw/workspace"
-mkdir -p "$OPENCLAW_HOME/.openclaw/agents"
+mkdir -p "$OPENCLAW_HOME/.openclaw/agents/main/agent"
+
+# Pre-populate auth-profiles.json for the configured model provider
+if [ "$MODEL_PROVIDER" = "google-vertex" ] && [ "$HAS_LLM_API_KEY" = "true" ]; then
+  echo ">>> Configuring google-vertex auth (API key)..."
+  LLM_API_KEY=\$(gcloud secrets versions access latest --secret="openclaw-llm-api-key" --project="$PROJECT_ID" 2>/dev/null || echo "")
+  cat > "$OPENCLAW_HOME/.openclaw/agents/main/agent/auth-profiles.json" <<AUTHEOF
+{
+  "version": 1,
+  "profiles": {
+    "google-vertex:default": {
+      "type": "api_key",
+      "provider": "google-vertex",
+      "key": "\$LLM_API_KEY"
+    }
+  }
+}
+AUTHEOF
+fi
 mkdir -p "$OPENCLAW_HOME/.openclaw/credentials"
 mkdir -p "$OPENCLAW_HOME/.openclaw/identity"
 mkdir -p "$OPENCLAW_HOME/.openclaw/memory"
