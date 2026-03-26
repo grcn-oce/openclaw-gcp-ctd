@@ -134,7 +134,7 @@ apt-get install -y -qq python3 python3-pip python3-venv > /dev/null 2>&1
 
 LITELLM_VENV="/opt/litellm"
 python3 -m venv "$LITELLM_VENV"
-"$LITELLM_VENV/bin/pip" install --quiet litellm[proxy] google-cloud-aiplatform
+"$LITELLM_VENV/bin/pip" install --quiet 'litellm[proxy]==1.82.6' google-cloud-aiplatform
 
 echo ">>> Creating LiteLLM config..."
 mkdir -p /etc/litellm
