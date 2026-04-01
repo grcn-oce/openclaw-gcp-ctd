@@ -304,32 +304,54 @@ When `llm_api_key` is set, Terraform stores it in Secret Manager with proper IAM
 
 ## Channel Integration
 
-OpenClaw supports messaging channels (Telegram, WhatsApp, etc.) to interact with agents. Channels are optional -- without them, the gateway runs in TUI/API-only mode.
+OpenClaw supports messaging channels (Telegram, Feishu/Lark, WhatsApp, etc.) to interact with agents. Channels are optional -- without them, the gateway runs in TUI/API-only mode.
+
+### Channel Concepts
+
+Before setting up a channel, it helps to understand the key configuration options:
+
+| Option | Description |
+|--------|-------------|
+| `enabled` | `true` to activate the channel |
+| `dmPolicy` | How DMs are handled: `"pairing"` (requires device approval), `"open"` (anyone can DM), `"off"` (DMs disabled) |
+| `groupPolicy` | How group messages are handled: `"allowlist"` (only approved groups), `"open"` (any group), `"off"` (groups disabled) |
+| `streaming` | Message delivery mode: `"partial"` (stream partial responses as edits), `"full"` (send only complete responses) |
+| `tokenFile` | Path to the file containing the bot/app token (fetched from Secret Manager at startup) |
 
 ### Telegram Setup
 
 #### 1. Create a Telegram Bot
 
 1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts to choose a name and username
-3. BotFather will give you a token like: `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
-4. Save this token securely -- do not commit it to version control
+2. Send `/newbot`
+3. Choose a **display name** (e.g., "My OpenClaw Bot")
+4. Choose a **username** -- must end in `bot` (e.g., `my_openclaw_bot`)
+5. BotFather will reply with a token like: `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+6. Save this token securely -- do not commit it to version control
+
+**Optional bot settings** (send these commands to @BotFather):
+
+- `/setdescription` -- set what users see before starting a chat
+- `/setabouttext` -- set the bot's About section
+- `/setuserpic` -- set the bot's profile picture
+- `/setcommands` -- set the command menu (e.g., `help - Show help`)
+- `/setprivacy` -- set to **Disable** if you want the bot to see all group messages (not just commands/mentions)
 
 #### 2. Store the Token in Secret Manager
 
 **Option A: Via Terraform (recommended)**
 
-Set the token in your `terraform.tfvars`:
+Set the token in your `terraform.tfvars` before deploying:
 
 ```hcl
 telegram_bot_token = "123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-Terraform will automatically create the `openclaw-telegram-bot-token` secret in Secret Manager with proper IAM bindings.
+Terraform will automatically create the `openclaw-telegram-bot-token` secret in Secret Manager with proper IAM bindings. The startup script will fetch it and configure the channel.
 
 **Option B: Via gcloud CLI (after deployment)**
 
-If you prefer to manage the secret separately:
+If you prefer to manage the secret separately or add Telegram after initial deployment:
 
 ```bash
 # Create the secret
@@ -348,7 +370,7 @@ gcloud secrets add-iam-policy-binding openclaw-telegram-bot-token \
 
 #### 3. Configure the Channel in openclaw.json
 
-SSH into the instance and update the OpenClaw configuration:
+SSH into the instance:
 
 ```bash
 gcloud compute ssh openclaw-gateway \
@@ -394,6 +416,217 @@ Restart the service:
 ```bash
 sudo systemctl restart openclaw-gateway.service
 ```
+
+#### 4. Test the Telegram Bot
+
+1. Open Telegram and search for your bot by its username
+2. Click **Start** to begin a conversation
+3. Send any message (e.g., "Hello")
+4. If `dmPolicy` is `"pairing"`, you'll see a pairing code -- approve it from the server:
+
+   ```bash
+   sudo -iu openclaw
+   openclaw devices list
+   openclaw device approve <request-id>
+   ```
+
+5. After approval, the bot should respond to your messages
+
+**Adding the bot to a group:**
+
+1. Add the bot to a Telegram group
+2. If `groupPolicy` is `"allowlist"`, the group needs to be approved:
+
+   ```bash
+   sudo -iu openclaw
+   openclaw channels telegram groups list    # find the group ID
+   openclaw channels telegram groups allow <group-id>
+   ```
+
+3. In the group, mention the bot by username (e.g., `@my_openclaw_bot what is 2+2?`) or reply to one of its messages
+
+### Feishu / Lark Setup
+
+Feishu (飞书) and its international version Lark are supported as a channel. This setup requires creating a Feishu/Lark custom app and configuring event subscriptions.
+
+#### 1. Create a Feishu/Lark Custom App
+
+1. Go to the [Feishu Open Platform](https://open.feishu.cn/app) (or [Lark Developer](https://open.larksuite.com/app) for international)
+2. Click **Create Custom App**
+3. Fill in the app name and description, then click **Create**
+4. On the app's **Credentials & Basic Info** page, note the:
+   - **App ID** (e.g., `cli_a1b2c3d4e5f6`)
+   - **App Secret** (e.g., `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`)
+
+#### 2. Configure App Permissions
+
+In the Feishu/Lark developer console, go to **Permissions & Scopes** and add the following scopes:
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message` | Send messages |
+| `im:message:send_as_bot` | Send messages as the bot |
+| `im:message.group_at_msg` | Receive group @ mentions |
+| `im:message.p2p_msg` | Receive DM messages |
+| `im:message.p2p_msg:readonly` | Read DM messages |
+| `im:resource` | Access message resources (images, files) |
+
+After adding scopes, click **Apply for Approval** (for company-managed apps) or they take effect immediately (for personal development apps).
+
+#### 3. Configure Event Subscriptions
+
+1. In the developer console, go to **Event Subscriptions**
+2. Set the **Request URL** to your gateway's Feishu webhook endpoint. Since the VM has no public IP, you have two options:
+
+   **Option A: Use Feishu's Long-Polling mode (recommended for this deployment)**
+
+   OpenClaw supports Feishu's WebSocket-based long-polling, which doesn't require a public URL. Set the channel config to use `"transport": "websocket"` (see step 5 below).
+
+   **Option B: Use a reverse proxy / tunnel**
+
+   If you prefer the webhook approach, set up a reverse proxy (e.g., Cloudflare Tunnel, ngrok) pointing to the VM's port 18789, then set the Request URL to `https://your-domain.com/channels/feishu/webhook`.
+
+3. Subscribe to these events:
+   - `im.message.receive_v1` -- receive messages
+   - `im.message.reaction.created_v1` -- receive reactions (optional)
+
+#### 4. Store Credentials in Secret Manager
+
+Store both the App ID and App Secret in Secret Manager:
+
+```bash
+# Store App ID
+echo -n "cli_a1b2c3d4e5f6" | \
+  gcloud secrets create openclaw-feishu-app-id \
+    --project=my-gcp-project \
+    --replication-policy=automatic \
+    --data-file=-
+
+# Store App Secret
+echo -n "YOUR_APP_SECRET" | \
+  gcloud secrets create openclaw-feishu-app-secret \
+    --project=my-gcp-project \
+    --replication-policy=automatic \
+    --data-file=-
+
+# Grant the gateway service account access to both
+for secret in openclaw-feishu-app-id openclaw-feishu-app-secret; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --project=my-gcp-project \
+    --role=roles/secretmanager.secretAccessor \
+    --member="serviceAccount:openclaw-gateway@my-gcp-project.iam.gserviceaccount.com"
+done
+```
+
+#### 5. Configure the Channel in openclaw.json
+
+SSH into the instance and edit the configuration:
+
+```bash
+gcloud compute ssh openclaw-gateway \
+  --zone=us-central1-c \
+  --tunnel-through-iap \
+  --project=my-gcp-project
+
+sudo -u openclaw nano /home/openclaw/.openclaw/openclaw.json
+```
+
+Update the `"channels"` section to add Feishu:
+
+```json
+"channels": {
+  "feishu": {
+    "enabled": true,
+    "appIdFile": "/home/openclaw/.openclaw/secrets/feishu-app-id.txt",
+    "appSecretFile": "/home/openclaw/.openclaw/secrets/feishu-app-secret.txt",
+    "transport": "websocket",
+    "dmPolicy": "pairing",
+    "groupPolicy": "allowlist",
+    "streaming": "partial"
+  }
+}
+```
+
+> **Note:** Use `"transport": "websocket"` for long-polling mode (no public URL needed). Use `"transport": "webhook"` if you've set up a reverse proxy.
+
+#### 6. Update fetch-secrets.sh
+
+```bash
+sudo -u openclaw nano /home/openclaw/.openclaw/secrets/fetch-secrets.sh
+```
+
+Add these lines after the gateway token fetch:
+
+```bash
+fetch_secret "openclaw-feishu-app-id" "$SECRETS_DIR/feishu-app-id.txt"
+fetch_secret "openclaw-feishu-app-secret" "$SECRETS_DIR/feishu-app-secret.txt"
+```
+
+Restart the service:
+
+```bash
+sudo systemctl restart openclaw-gateway.service
+```
+
+#### 7. Enable the Bot in Feishu/Lark
+
+1. In the developer console, go to **Bot** and enable the bot capability
+2. Go to **Version Management & Release** and publish the app
+3. If your organization requires admin approval, wait for it to be approved
+
+#### 8. Test the Feishu Bot
+
+1. In Feishu/Lark, search for the bot by name and start a chat
+2. Send a message (e.g., "你好" or "Hello")
+3. If `dmPolicy` is `"pairing"`, approve the device from the server:
+
+   ```bash
+   sudo -iu openclaw
+   openclaw devices list
+   openclaw device approve <request-id>
+   ```
+
+4. After approval, the bot should respond to your messages
+
+**Adding the bot to a group:**
+
+1. Add the bot to a Feishu/Lark group chat
+2. If `groupPolicy` is `"allowlist"`, approve the group:
+
+   ```bash
+   sudo -iu openclaw
+   openclaw channels feishu groups list
+   openclaw channels feishu groups allow <group-id>
+   ```
+
+3. Mention the bot with `@BotName` in the group to interact with it
+
+### Using Multiple Channels
+
+You can enable both Telegram and Feishu (and other channels) simultaneously:
+
+```json
+"channels": {
+  "telegram": {
+    "enabled": true,
+    "tokenFile": "/home/openclaw/.openclaw/secrets/telegram-bot-token.txt",
+    "dmPolicy": "pairing",
+    "groupPolicy": "allowlist",
+    "streaming": "partial"
+  },
+  "feishu": {
+    "enabled": true,
+    "appIdFile": "/home/openclaw/.openclaw/secrets/feishu-app-id.txt",
+    "appSecretFile": "/home/openclaw/.openclaw/secrets/feishu-app-secret.txt",
+    "transport": "websocket",
+    "dmPolicy": "pairing",
+    "groupPolicy": "allowlist",
+    "streaming": "partial"
+  }
+}
+```
+
+Each channel maintains its own device approvals and group allowlists independently.
 
 ### Rotating Secrets
 
