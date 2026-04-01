@@ -2,6 +2,37 @@
 
 Secure-by-default Terraform configuration for deploying OpenClaw Gateway on Google Cloud Platform.
 
+## Table of Contents
+
+- [Security Hardening](#security-hardening-vs-default-openclaw)
+- [Architecture](#architecture)
+  - [How LLM Authentication Works](#how-llm-authentication-works)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Using the VM](#using-the-vm)
+  - [As Admin User](#as-admin-user-default-ssh-login)
+  - [As OpenClaw User](#as-openclaw-user-recommended-for-openclaw-cli)
+  - [Quick Reference](#quick-reference)
+- [LLM Provider Configuration](#llm-provider-configuration)
+  - [Default: LiteLLM + Vertex AI](#default-litellm--vertex-ai-recommended)
+  - [Alternative: Direct API Key Providers](#alternative-direct-api-key-providers)
+- [Channel Integration](#channel-integration)
+  - [Channel Concepts](#channel-concepts)
+  - [Telegram Setup](#telegram-setup)
+  - [Feishu / Lark Setup](#feishu--lark-setup)
+  - [Using Multiple Channels](#using-multiple-channels)
+  - [Rotating Secrets](#rotating-secrets)
+- [Variables](#variables)
+- [Outputs](#outputs)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+  - [Device Approval Prompt](#device-approval-prompt--cant-access-control-ui-or-bot)
+  - [LiteLLM Proxy Not Starting](#litellm-proxy-not-starting)
+  - [Model Not Found (404)](#model-not-found-404)
+  - [OpenClaw Can't Connect to LiteLLM](#openclaw-cant-connect-to-litellm)
+  - [Service Account Permissions](#service-account-permissions)
+- [Cleanup](#cleanup)
+
 ## Security Hardening (vs. Default OpenClaw)
 
 This deployment applies security controls that go beyond a standard OpenClaw install. The table below highlights what's different:
