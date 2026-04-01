@@ -140,6 +140,35 @@ This means **no LLM API keys are needed** in your Terraform config, Secret Manag
    sudo systemctl status openclaw-gateway.service
    ```
 
+7. **Approve your first device:**
+
+   This deployment has device authentication **enabled by default** (`dangerouslyDisableDeviceAuth: false`). When you first access the Control UI or send a DM to the bot (e.g. on Telegram with `dmPolicy: "pairing"`), you'll be prompted to approve the device from the server.
+
+   SSH into the VM and switch to the `openclaw` user:
+
+   ```bash
+   gcloud compute ssh openclaw-gateway \
+     --zone=us-central1-c \
+     --tunnel-through-iap \
+     --project=my-gcp-project
+
+   sudo -iu openclaw
+   ```
+
+   List pending device requests:
+
+   ```bash
+   openclaw devices list
+   ```
+
+   Approve the device using the request ID shown:
+
+   ```bash
+   openclaw device approve <request-id>
+   ```
+
+   You only need to do this once per device. To review or revoke devices later, see the [Security Guide](openclaw-secure-configuration-guide.md).
+
 ## Using the VM
 
 When you SSH into the instance, you land as your admin user (e.g., `admin_yourname`). OpenClaw runs as a dedicated `openclaw` user with secrets pre-loaded. Depending on what you need to do, use the appropriate user:
@@ -439,6 +468,21 @@ gcloud compute ssh openclaw-gateway \
 - **Docker hardening** -- `no-new-privileges`, log rotation, ulimits, sandbox network `none`
 
 ## Troubleshooting
+
+### Device approval prompt / can't access Control UI or bot
+
+Device authentication is enabled by default. If you see a pairing code or device approval prompt, SSH into the VM and approve it:
+
+```bash
+gcloud compute ssh openclaw-gateway \
+  --zone=us-central1-c \
+  --tunnel-through-iap \
+  --project=my-gcp-project
+
+sudo -iu openclaw
+openclaw devices list          # find the pending request ID
+openclaw device approve <request-id>
+```
 
 ### LiteLLM proxy not starting
 

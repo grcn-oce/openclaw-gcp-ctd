@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "Bash(gh api:*)",
+      "Bash(terraform validate:*)"
+    ]
+  }
+}

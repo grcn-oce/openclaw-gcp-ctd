@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.openclaw.dev)",
+      "WebFetch(domain:openclaw.dev)"
+    ]
+  }
+}
